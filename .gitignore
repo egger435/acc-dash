@@ -20,3 +20,4 @@ _test*/
 *.layout.txt
 *.accdash
 /ffmpeg
+/build
