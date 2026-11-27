@@ -95,27 +95,22 @@ sealed partial class Dash
         int rx = W - 10 - RightW;
         int ry = HeaderH + 10;
         int rh = H - 10 - ry;
-        double[] wts = { 1.60, 1.70, 2.15, 1.15, 1.15 };
-        double sum = 0;
-        foreach (double d in wts) sum += d;
-        int avail = rh - 4 * 6;
+        bool revRow = review != null;
 
-        int[] hs = new int[5];
-        int used = 0;
-        for (int i = 0; i < 5; i++)
-        {
-            hs[i] = (int)(avail * wts[i] / sum);
-            used += hs[i];
-        }
-        hs[2] += avail - used;      // give rounding leftovers to the G-G card
+        // dial stays a sane size, the pedals and the G-G disc share what is left,
+        // and gear + rpm keep a readable strip at the bottom
+        int stripH = Math.Max(62, Math.Min(112, rh / 9));
+        int gaugeH = Math.Max(96, mapH);          // same height as the delta card / track map
+        int afterGauge = rh - 18 - gaugeH - stripH;
+        int pedH = afterGauge / 2;
+        int ggH = afterGauge - pedH;
 
-        Control[] comps = { gauge, pedals, gg, gearRead, rpmRead };
-        int cy = ry;
-        for (int i = 0; i < 5; i++)
-        {
-            comps[i].Bounds = new Rectangle(rx, cy, RightW, hs[i]);
-            cy += hs[i] + 6;
-        }
+        gauge.Bounds = new Rectangle(rx, ry, RightW, gaugeH);
+        pedals.Bounds = new Rectangle(rx, ry + gaugeH + 6, RightW, pedH);
+        gg.Bounds = new Rectangle(rx, ry + gaugeH + pedH + 12, RightW, ggH);
+        int gy = ry + rh - stripH;
+        gearRead.Bounds = new Rectangle(rx, gy, RightW, stripH);
+        rpmRead.Visible = false;
 
         // ---- centre column
         int cx = x + LeftW + 10;
@@ -123,18 +118,40 @@ sealed partial class Dash
         if (cw < 100) cw = 100;
         int ch = rh;
         int scrubH = review != null ? 56 : 0;
-        int th = (ch - 6 - scrubH) / 2;
-        trPedals.Bounds = new Rectangle(cx, ry, cw, th);
-        trSteerFf.Bounds = new Rectangle(cx, ry + th + 6, cw, ch - th - 6 - scrubH);
+
+        // the video card sits on top of both charts, left aligned, and keeps the
+        // exact size of the track map.  The space to its right stays empty for now.
+        // video + delta only exist while reviewing a lap; live gets the whole
+        // centre column for the charts
+        int vh = revRow ? Math.Max(96, mapH) : 0;
+        int dh = revRow ? vh + 46 : 0;                    // the row is as tall as the delta card
+        vh = dh;                                          // ... and the video grows with it, keeping 16:9
+        int vw = revRow ? Math.Max(160, (int)Math.Round(vh * 16.0 / 9.0)) : 0;
+        if (vw > cw - 170) vw = Math.Max(160, cw - 170);   // never squeeze the delta card away
+        if (vw > cw) vw = cw;
+        video.Visible = revRow;
+        deltaPane.Visible = revRow;
+        if (revRow)
+        {
+            video.Bounds = new Rectangle(cx, ry, vw, vh);
+            deltaPane.Bounds = new Rectangle(cx + vw + 6, ry, Math.Max(120, cw - vw - 6), dh);
+        }
+
+        int rowH = Math.Max(vh, dh);
+        int top = ry + rowH + (revRow ? 6 : 0);
+        int th = (ch - rowH - (revRow ? 12 : 6) - scrubH) / 2;
+        if (th < 70) th = 70;
+        trPedals.Bounds = new Rectangle(cx, top, cw, th);
+        trSteerFf.Bounds = new Rectangle(cx, top + th + 6, cw, Math.Max(60, ch - rowH - (revRow ? 12 : 6) - th - scrubH));
         if (scrub != null)
         {
             scrub.Visible = review != null;
             if (review != null) scrub.Bounds = new Rectangle(cx, ry + ch - 50, cw, 50);
         }
 
-        // fonts that depend on tile height
-        gearRead.ValPt = Math.Max(18f, Math.Min(52f, hs[3] * 0.62f));
-        rpmRead.ValPt = Math.Max(16f, Math.Min(44f, hs[4] * 0.52f));
+        // fonts that depend on card height
+        gearRead.ValPt = Math.Max(16f, Math.Min(52f, gearRead.Height * 0.56f));
+        rpmRead.ValPt = Math.Max(14f, Math.Min(44f, rpmRead.Height * 0.50f));
     }
 
     protected override void OnHandleCreated(EventArgs e)

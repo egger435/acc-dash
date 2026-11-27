@@ -1,4 +1,4 @@
-// ===========================================================================
+﻿// ===========================================================================
 //  AccDash - lap sample, lap data and file format
 //  src/Laps/LapData.cs
 // ===========================================================================
@@ -28,6 +28,7 @@ sealed class LapSample
     public float Lat, Long;
     public float Fuel, TyreF, TyreR;
     public float X, Z, Head;      // world position, for the track map
+    public float S;               // 0..1 along the track, ACC's normalized position
 
     public LapSample Clone()
     {
@@ -48,6 +49,35 @@ sealed class LapData
     public bool FromFile;
     public string Path = "";
     public List<LapSample> Samples = new List<LapSample>();
+
+    // --- embedded lap video (640x360, 12 fps, h264)
+    public byte[] VideoBytes;
+    public int VideoW = 320, VideoH = 180, VideoFps = 24;
+    public float VideoMs;          // clip length, ms
+    public float VideoT0;          // lap time (s) at which the clip starts
+
+    // --- wall clock window, only meaningful while recording
+    public double WallT0;          // ms, wall clock when the lap started
+    public double WallT1;          // ms, wall clock when it ended
+
+    public bool HasVideo { get { return VideoBytes != null && VideoBytes.Length > 1024; } }
+
+
+    // Track names come back from ACC as "spa", "brands_hatch", "Brands Hatch"...
+
+    public static string NormTrack(string t0)
+    {
+        if (t0 == null) return "";
+        string t = t0.Trim().ToLowerInvariant().Replace('_', ' ');
+        while (t.Contains("  ")) t = t.Replace("  ", " ");
+        return t;
+    }
+
+    public static bool SameTrack(string a, string b)
+    {
+        string x = NormTrack(a), y = NormTrack(b);
+        return x.Length > 0 && x == y;
+    }
 
     public float LastT
     {
@@ -72,18 +102,19 @@ sealed class LapData
         {
             string n = "L" + LapNo.ToString(Fmt.Inv).PadLeft(2, ' ') + "  " + Fmt.Mmss((int)LapMs);
             if (!string.IsNullOrEmpty(Track)) n += "  " + Track;
+            if (HasVideo) n += "  [video]";
             if (FromFile) n += "  [file]";
             return n;
         }
     }
 
-    public void Add(float t, float gas, float brake, float steer, float ff, float speed, int gear, int rpm, float lat, float lon, float fuel, float tyreF, float tyreR, float x, float z, float head)
+    public void Add(float t, float gas, float brake, float steer, float ff, float speed, int gear, int rpm, float lat, float lon, float fuel, float tyreF, float tyreR, float x, float z, float head, float prog)
     {
         LapSample s = new LapSample();
         s.T = t; s.Gas = gas; s.Brake = brake; s.Steer = steer; s.Ff = ff;
         s.Speed = speed; s.Gear = gear; s.Rpm = rpm; s.Lat = lat; s.Long = lon;
         s.Fuel = fuel; s.TyreF = tyreF; s.TyreR = tyreR;
-        s.X = x; s.Z = z; s.Head = head;
+        s.X = x; s.Z = z; s.Head = head; s.S = prog;
         Samples.Add(s);
     }
 
@@ -116,6 +147,7 @@ sealed class LapData
         r.TyreR = a.TyreR + (b.TyreR - a.TyreR) * u;
         r.X = a.X + (b.X - a.X) * u;
         r.Z = a.Z + (b.Z - a.Z) * u;
+        r.S = a.S + (b.S - a.S) * u;
         float dh = b.Head - a.Head;
         while (dh > (float)Math.PI) dh -= (float)(Math.PI * 2.0);
         while (dh < -(float)Math.PI) dh += (float)(Math.PI * 2.0);
@@ -125,10 +157,10 @@ sealed class LapData
         return r;
     }
 
-    public string ToText()
+    string HeadText()
     {
         StringBuilder sb = new StringBuilder();
-        sb.AppendLine("# accdash lap v1");
+        sb.AppendLine("# accdash lap v3");
         sb.AppendLine("track=" + Track);
         sb.AppendLine("car=" + Car);
         sb.AppendLine("lap=" + LapNo.ToString(Fmt.Inv));
@@ -138,14 +170,79 @@ sealed class LapData
         sb.AppendLine("air=" + AirTemp.ToString("0.0", Fmt.Inv));
         sb.AppendLine("road=" + RoadTemp.ToString("0.0", Fmt.Inv));
         sb.AppendLine("grip=" + Grip.ToString(Fmt.Inv));
-        sb.AppendLine("t,gas,brake,steer,ff,speed,gear,rpm,lat,long,fuel,tyref,tyrer,x,z,head");
+        sb.AppendLine("vfps=" + VideoFps.ToString(Fmt.Inv));
+        sb.AppendLine("vt0=" + VideoT0.ToString("0.000", Fmt.Inv));
+        sb.AppendLine("vms=" + VideoMs.ToString("0", Fmt.Inv));
+        return sb.ToString();
+    }
+
+    string CsvText()
+    {
+        StringBuilder sb = new StringBuilder();
+        sb.AppendLine("t,gas,brake,steer,ff,speed,gear,rpm,lat,long,fuel,tyref,tyrer,x,z,head,s");
         for (int i = 0; i < Samples.Count; i++)
         {
             LapSample s = Samples[i];
-            sb.AppendLine(string.Format(Fmt.Inv, "{0:0.000},{1:0.000},{2:0.000},{3:0.000},{4:0.000},{5:0.0},{6},{7},{8:0.000},{9:0.000},{10:0.00},{11:0.0},{12:0.0},{13:0.00},{14:0.00},{15:0.000}",
-                s.T, s.Gas, s.Brake, s.Steer, s.Ff, s.Speed, s.Gear, s.Rpm, s.Lat, s.Long, s.Fuel, s.TyreF, s.TyreR, s.X, s.Z, s.Head));
+            sb.AppendLine(string.Format(Fmt.Inv, "{0:0.000},{1:0.000},{2:0.000},{3:0.000},{4:0.000},{5:0.0},{6},{7},{8:0.000},{9:0.000},{10:0.00},{11:0.0},{12:0.0},{13:0.00},{14:0.00},{15:0.000},{16:0.0000}",
+                s.T, s.Gas, s.Brake, s.Steer, s.Ff, s.Speed, s.Gear, s.Rpm, s.Lat, s.Long, s.Fuel, s.TyreF, s.TyreR, s.X, s.Z, s.Head, s.S));
         }
         return sb.ToString();
+    }
+
+    /// Plain text, no video: still used by the debug tools and by hand.
+    public string ToText()
+    {
+        return HeadText() + CsvText();
+    }
+
+    static readonly byte[] Magic = Encoding.ASCII.GetBytes("ACCDASH3");
+
+    /// Binary container: magic, header text, the mp4 itself, then the samples.
+    public byte[] ToBytes()
+    {
+        byte[] head = Encoding.UTF8.GetBytes(HeadText());
+        byte[] csv = Encoding.UTF8.GetBytes(CsvText());
+        byte[] vid = VideoBytes == null ? new byte[0] : VideoBytes;
+        using (MemoryStream ms = new MemoryStream(csv.Length + vid.Length + head.Length + 64))
+        using (BinaryWriter w = new BinaryWriter(ms, Encoding.UTF8))
+        {
+            w.Write(Magic);
+            w.Write(head.Length); w.Write(head);
+            w.Write(vid.Length); w.Write(vid);
+            w.Write(csv.Length); w.Write(csv);
+            w.Flush();
+            return ms.ToArray();
+        }
+    }
+
+    public static LapData Parse(byte[] data, string path, out string err)
+    {
+        err = "";
+        if (data == null || data.Length < 16) { err = "file is empty"; return null; }
+        bool bin = true;
+        for (int i = 0; i < Magic.Length && bin; i++) if (i >= data.Length || data[i] != Magic[i]) bin = false;
+        if (!bin) return Parse(Encoding.UTF8.GetString(data), path, out err);
+        try
+        {
+            using (MemoryStream ms = new MemoryStream(data))
+            using (BinaryReader r = new BinaryReader(ms, Encoding.UTF8))
+            {
+                r.ReadBytes(Magic.Length);
+                int hl = r.ReadInt32(); string head = Encoding.UTF8.GetString(r.ReadBytes(hl));
+                int vl = r.ReadInt32(); byte[] vid = r.ReadBytes(vl);
+                int cl = r.ReadInt32(); string csv = Encoding.UTF8.GetString(r.ReadBytes(cl));
+                LapData d = Parse(head + "\n" + csv, path, out err);
+                if (d == null) return null;
+                if (vl > 1024)
+                {
+                    d.VideoBytes = vid;
+                    d.FromFile = true;
+                    d.Path = path ?? "";
+                }
+                return d;
+            }
+        }
+        catch (Exception ex) { err = ex.Message; return null; }
     }
 
     public static LapData Parse(string text, string path, out string err)
@@ -177,6 +274,9 @@ sealed class LapData
                     else if (k == "air") { float n; if (float.TryParse(v, System.Globalization.NumberStyles.Float, Fmt.Inv, out n)) d.AirTemp = n; }
                     else if (k == "road") { float n; if (float.TryParse(v, System.Globalization.NumberStyles.Float, Fmt.Inv, out n)) d.RoadTemp = n; }
                     else if (k == "grip") { int n; if (int.TryParse(v, out n)) d.Grip = n; }
+                    else if (k == "vfps") { int n; if (int.TryParse(v, out n) && n > 0) d.VideoFps = n; }
+                    else if (k == "vt0") { float n; if (float.TryParse(v, NumberStyles.Float, Fmt.Inv, out n)) d.VideoT0 = n; }
+                    else if (k == "vms") { float n; if (float.TryParse(v, NumberStyles.Float, Fmt.Inv, out n)) d.VideoMs = n; }
                     continue;
                 }
                 if (ln.IndexOf("t,gas", StringComparison.OrdinalIgnoreCase) == 0) { inData = true; continue; }
@@ -204,14 +304,16 @@ sealed class LapData
                 float.TryParse(f[11], System.Globalization.NumberStyles.Float, Fmt.Inv, out tyref);
                 float.TryParse(f[12], System.Globalization.NumberStyles.Float, Fmt.Inv, out tyrer);
             }
-            float px = 0f, pz = 0f, phd = 0f;
+            float px = 0f, pz = 0f, phd = 0f, prog = 0f;
             if (f.Length > 15)
             {
                 float.TryParse(f[13], System.Globalization.NumberStyles.Float, Fmt.Inv, out px);
                 float.TryParse(f[14], System.Globalization.NumberStyles.Float, Fmt.Inv, out pz);
                 float.TryParse(f[15], System.Globalization.NumberStyles.Float, Fmt.Inv, out phd);
             }
-            d.Add(t, gas, brake, steer, ff, speed, gear, rpm, lat, lon, fuel, tyref, tyrer, px, pz, phd);
+            if (f.Length > 16)
+                float.TryParse(f[16], System.Globalization.NumberStyles.Float, Fmt.Inv, out prog);
+            d.Add(t, gas, brake, steer, ff, speed, gear, rpm, lat, lon, fuel, tyref, tyrer, px, pz, phd, prog);
         }
 
         if (d.Samples.Count < 2)

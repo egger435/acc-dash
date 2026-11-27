@@ -22,6 +22,59 @@ static class Native
 
     [DllImport("dwmapi.dll")]
     public static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
+
+    [DllImport("dwmapi.dll")]
+    public static extern int DwmGetWindowAttribute(IntPtr hwnd, int attr, out RECT value, int size);
+
+    // --- window enumeration, used to find the game's screen ------------------
+
+    public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    public static extern bool EnumWindows(EnumWindowsProc cb, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    public static extern bool IsWindowVisible(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    public static extern bool IsIconic(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    public static extern bool GetWindowRect(IntPtr hWnd, out RECT r);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern int GetWindowText(IntPtr hWnd, StringBuilder s, int n);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern int GetClassName(IntPtr hWnd, StringBuilder s, int n);
+
+    [DllImport("user32.dll")]
+    public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
+
+    // flag 2 = PW_RENDERFULLCONTENT: the only one that returns content from a
+    // DirectX window instead of a black rectangle
+    [DllImport("user32.dll")]
+    public static extern bool PrintWindow(IntPtr hWnd, IntPtr hdc, int flags);
+
+    // A DPI-unaware caller cannot print a DPI-unaware window: the sizes do not
+    // match and the result is an empty bitmap.  Switching the grab thread to the
+    // unaware context makes PrintWindow see the same pixels the game owns.
+    [DllImport("user32.dll")]
+    public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr ctx);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetThreadDpiAwarenessContext();
+
+    public static readonly IntPtr DPI_UNAWARE = new IntPtr(-1);
+    public static readonly IntPtr DPI_SYSTEM = new IntPtr(-2);
+
+    // Opening a web page: ShellExecute is what the shell itself uses, so it goes
+    // through the default browser even when Process.Start is refused.
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    public static extern IntPtr ShellExecute(IntPtr hwnd, string op, string file, string args, string dir, int show);
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct RECT { public int Left, Top, Right, Bottom; }
 }
 
 static class Pal

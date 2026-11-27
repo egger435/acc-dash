@@ -28,7 +28,7 @@ acc-dash\
   assets\
     app.ico              程序图标
     icon-256.png         图标原图
-  src\             
+  src\         
     Program.cs           入口
     Interop.cs           Win32 P/Invoke、配色表 Pal
     Model.cs             Fmt 格式化、Ring 环形缓冲、Snap 数据快照、Clock
@@ -48,6 +48,11 @@ acc-dash\
     Laps\LapBrowser.cs   圈速列表控件与 LAPS 对话框
     Track\TrackOutline.cs 赛道轮廓折线与 .map 文件格式
     Track\TrackMap.cs    左列赛道地图控件
+    Ui\VideoPane.cs      视频卡片
+    Video\Ff.cs          ffmpeg 定位、抓屏参数、游戏窗口矩形
+    Video\LiveCapture.cs 实时预览解码到 320x180
+    Video\Recorder.cs    1 秒分片录制与单圈视频裁切
+    Dash.Video.cs        视频卡片接线：预览 / 录制 / 内嵌回放
 ```
 
 ---
@@ -102,9 +107,15 @@ SpeedUnit=kmh        ; kmh | mph
 TempUnit=c           ; c | f
 GScale=2.0           ; G-G 圆盘满量程 0.5..4.0 g
 LongGSign=-1         ; -1 = 制动为正（默认），+1 = 制动为负
+
+[video]
+Video=1              ; 1 = 视频功能开（实时预览 + 单圈录像）
+VideoPreview=1       ; 0 = 只录像，不显示实时预览
+VideoCrf=26          ; 画质，越小越清楚、文件越大
+FfmpegPath=          ; 留空则按 ..\tools\ffmpeg\bin\ffmpeg.exe 找
 ```
 
-改完重启生效；界面里改滑杆后按 `F4`（或 `SAVE CFG`）写回。
+改完重启生效
 
 ---
 

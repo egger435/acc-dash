@@ -1,4 +1,4 @@
-// ===========================================================================
+﻿// ===========================================================================
 //  AccDash - ACC shared memory structs and the page reader
 //  src/Shm.cs
 // ===========================================================================
@@ -364,7 +364,6 @@ sealed class AccShm : IDisposable
     }
 
     /// Which way ACC's accG[2] is presented: -1 flips it so braking reads negative.
-    public int LongGSign = -1;
 
     /// Fill a snapshot from the last pages read. Returns false when stale.
     public bool Fill(Snap sn, out string why)
@@ -381,7 +380,8 @@ sealed class AccShm : IDisposable
         sn.Gas = P.Gas;
         sn.Brake = P.Brake;
         sn.LatG = P.AccG != null && P.AccG.Length > 0 ? P.AccG[0] : 0f;
-        sn.LongG = (P.AccG != null && P.AccG.Length > 2 ? P.AccG[2] : 0f) * LongGSign;
+        // fixed convention: braking reads negative, accelerating positive
+        sn.LongG = (P.AccG != null && P.AccG.Length > 2 ? -P.AccG[2] : 0f);
         sn.Yaw = P.LocalAngularVelocity != null && P.LocalAngularVelocity.Length > 1 ? P.LocalAngularVelocity[1] * 57.29578f : 0f;
         sn.FinalFf = P.FinalFF;
         sn.Fuel = P.Fuel;
@@ -410,6 +410,7 @@ sealed class AccShm : IDisposable
             sn.WorldZ = sz * 0.25f;
         }
         sn.Head = P.Heading;
+        sn.Norm = G.NormalizedCarPosition;
 
         float slip = 0f;
         if (P.WheelSlip != null) for (int i = 0; i < P.WheelSlip.Length; i++) slip = Math.Max(slip, Math.Abs(P.WheelSlip[i]));
@@ -420,6 +421,8 @@ sealed class AccShm : IDisposable
         sn.Status = G.Status;
         sn.Session = G.Session;
         sn.CompletedLaps = G.CompletedLaps;
+        sn.Sector = G.CurrentSectorIndex;
+        sn.LastSector = G.LastSectorTime;
         sn.Position = G.Position;
         sn.TotalLaps = G.NumberOfLaps;
         sn.SessionTimeLeft = G.SessionTimeLeft;

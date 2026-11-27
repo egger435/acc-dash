@@ -1,4 +1,4 @@
-// ===========================================================================
+﻿// ===========================================================================
 //  AccDash - timer, tick loop, shared memory open/close, CLI modes
 //  src/Dash.Runtime.cs
 // ===========================================================================
@@ -150,6 +150,8 @@ sealed partial class Dash
 
         if (now - lastStat > 1000) { paintsPerSec = (int)((paints - lastPaints) * 1000.0 / Math.Max(1.0, now - lastStat)); lastPaints = paints; lastStat = now; WriteStatus(now); }
 
+        TickVideo(now);
+        TickRecorder(now);
         Render(now);
 
         // --- traces at ~15 Hz
@@ -216,6 +218,7 @@ sealed partial class Dash
         Location = new Point(0, 0);
         Show();
         LayoutAll();
+        foreach (string f in PreloadLaps) OpenLapFile(f);      // best-lap candidates for the delta card
         if (!string.IsNullOrEmpty(ShotLapFile)) OpenLapFile(ShotLapFile);
         if (ShotScrubAt >= 0f && review != null)
         {
@@ -246,8 +249,10 @@ sealed partial class Dash
         sb.AppendLine("client " + ClientSize.Width + "x" + ClientSize.Height);
         sb.AppendLine("last tile  " + tTyre.Bounds);
         sb.AppendLine("session    " + sess.Bounds + "  rows=" + sess.Rows.Count + " rowH=" + sess.LastRowH + " top=" + sess.LastTop + " footH=" + sess.LastFootH + " h=" + sess.Height);
+        sb.AppendLine("map        " + map.Bounds + "  pts=" + (outline != null ? outline.Points.Count.ToString(Fmt.Inv) : "-") + " key=" + outlineKey);
+        sb.AppendLine("video      " + video.Bounds + "  note=[" + video.Note + "] live=" + (video.Live != null) + "  hasVideo=" + (review != null && review.HasVideo));
+        sb.AppendLine("time slider" + timeSlider.Bounds);
         sb.AppendLine("time label " + timeLbl.Bounds);
-        sb.AppendLine("map        " + map.Bounds + "  pts=" + (outline != null ? outline.Points.Count.ToString(Fmt.Inv) : "-") + " key=" + outlineKey);        sb.AppendLine("time slider" + timeSlider.Bounds);
         sb.AppendLine("ini label  " + iniLbl.Bounds);
         sb.AppendLine("gauge      " + gauge.Bounds);
         sb.AppendLine("pedals     " + pedals.Bounds);
@@ -259,6 +264,10 @@ sealed partial class Dash
         foreach (Button b in headButtons) sb.AppendLine("button     " + b.Text + " " + b.Bounds + " vis=" + b.Visible);
         sb.AppendLine("laps       " + laps.Count + "  rec=" + (recLap != null ? recLap.Samples.Count.ToString() : "-"));
         sb.AppendLine("gg         lat=" + gg.Lat.ToString("0.00", Fmt.Inv) + " lon=" + gg.Lon.ToString("0.00", Fmt.Inv) + " scale=" + gg.GScale.ToString("0.0", Fmt.Inv));
+        if (review != null && clipCap != null)
+            sb.AppendLine("video      frame=" + clipCap.FrameNo.ToString(Fmt.Inv) + " target=" + clipCap.Target.ToString(Fmt.Inv)
+                        + " seq=" + clipCap.Seq.ToString(Fmt.Inv) + " vt0=" + review.VideoT0.ToString("0.000", Fmt.Inv)
+                        + " vms=" + review.VideoMs.ToString("0", Fmt.Inv));
         sb.AppendLine("review     pos=" + reviewPos.ToString("0.00", Fmt.Inv) + " span=" + (review != null ? review.Span.ToString("0.00", Fmt.Inv) : "-") + " playing=" + revPlaying + " speed=" + revSpeed.ToString("0", Fmt.Inv));
         File.WriteAllText(path + ".layout.txt", sb.ToString());
         Close();

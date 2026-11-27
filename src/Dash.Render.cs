@@ -1,4 +1,4 @@
-// ===========================================================================
+﻿// ===========================================================================
 //  AccDash - render pass, lamps and keyboard handling
 //  src/Dash.Render.cs
 // ===========================================================================
@@ -28,6 +28,9 @@ sealed partial class Dash
         {
             trPedals.RevPos = (float)reviewPos;
             trSteerFf.RevPos = (float)reviewPos;
+            deltaPane.Pos = reviewPos;
+            deltaPane.UpdateCursor();
+            deltaPane.Invalidate();
         }
 
         string speedUnit = cfg.SpeedUnit == "mph" ? "MPH" : "KM/H";
@@ -86,6 +89,7 @@ sealed partial class Dash
         string gripTxt = (sn.TrackGrip >= 0 && sn.TrackGrip <= 6) ? gripNames[sn.TrackGrip] : "-";
         string foot = "AIR " + (sn.AirTemp > 0.5f ? Fmt.I(CfgT(sn.AirTemp)) : "-") + "  ROAD " + (sn.RoadTemp > 0.5f ? Fmt.I(CfgT(sn.RoadTemp)) : "-") + "  GRIP " + gripTxt;
         if (sn.SessionTimeLeft > 1f) foot += "   LEFT " + Fmt.Clock(sn.SessionTimeLeft);
+        if (lapNote.Length > 0 && now - lapNoteAt < 9000.0) foot = lapNote;
         sess.Set("SESSION", rows, cols, foot);
 
         // centre + right

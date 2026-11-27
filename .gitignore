@@ -1,1 +1,22 @@
+# build output
+AccDash.exe
+*.pdb
+*.obj
+sources.rsp
+
+# runtime state
 dash-status.txt
+cache/
+clips/
+laps/
+rec/
+
+# ffmpeg is 300 MB of binaries - never commit it
+tools/ffmpeg/
+tools/*.exe
+
+# local scratch
+_test*/
+*.layout.txt
+*.accdash
+/ffmpeg
