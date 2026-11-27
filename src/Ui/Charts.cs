@@ -1,4 +1,4 @@
-// ===========================================================================
+﻿// ===========================================================================
 //  AccDash - trace chart, gauges, bars, G-G disc, big readout, session panel
 //  src/Ui/Charts.cs
 // ===========================================================================
@@ -182,14 +182,15 @@ sealed class Trace : Pane
             float y = signed
                 ? inner.Y + inner.Height * (0.5f - 0.5f * Math.Max(-1f, Math.Min(1f, val)))
                 : inner.Y + inner.Height * (1f - Math.Max(-0.2f, Math.Min(1f, val)));
-            if (y < inner.Y + 1.5f) y = inner.Y + 1.5f;
-            if (y > inner.Bottom - 1.5f) y = inner.Bottom - 1.5f;
+            // keep the whole 2.8 px stroke inside the plot area
+            if (y < inner.Y + 2.2f) y = inner.Y + 2.2f;
+            if (y > inner.Bottom - 2.2f) y = inner.Bottom - 2.2f;
             float x = inner.Left + inner.Width * (s.T - t0) / dt;
             pts.Add(new PointF(x, y));
         }
         if (pts.Count < 2) return;
 
-        using (Pen p = new Pen(c, 1.6f))
+        using (Pen p = new Pen(c, 2.8f))
         {
             p.LineJoin = LineJoin.Round;
             g.DrawLines(p, pts.ToArray());
@@ -210,14 +211,15 @@ sealed class Trace : Pane
             float y = signed
                 ? inner.Y + inner.Height * (0.5f - 0.5f * Math.Max(-1f, Math.Min(1f, val)))
                 : inner.Y + inner.Height * (1f - Math.Max(-0.2f, Math.Min(1f, val)));
-            if (y < inner.Y + 1.5f) y = inner.Y + 1.5f;
-            if (y > inner.Bottom - 1.5f) y = inner.Bottom - 1.5f;
+            // keep the whole 2.8 px stroke inside the plot area
+            if (y < inner.Y + 2.2f) y = inner.Y + 2.2f;
+            if (y > inner.Bottom - 2.2f) y = inner.Bottom - 2.2f;
             float x = inner.Right - (float)((now - t) / WindowMs * inner.Width);
             pts.Add(new PointF(x, y));
         }
         if (pts.Count < 2) return;
 
-        using (Pen p = new Pen(c, 1.8f))
+        using (Pen p = new Pen(c, 2.8f))
         {
             p.LineJoin = LineJoin.Round;
             g.DrawLines(p, pts.ToArray());
@@ -259,15 +261,13 @@ float barH = 16f;
         Rectangle bar = new Rectangle(12, Height - (int)barH - 6, Width - 24, 6);
 
         G.Text(g, "STEERING", F.Cap, Pal.Dim, 10, 5);
-        G.Text(g, "FFB " + Fmt.I(Ff * 100) + "%", F.Cap, Pal.Amber,
-               Width - 10 - g.MeasureString("FFB 100%", F.Cap).Width, 5);
 
-        // dial on the left, numeric readout on the right: a wide, short card
-        // cannot hold a big dial with the number underneath it
+        // dial centred across the card, numeric readout centred underneath it
         float top = 26f;
-        float rad = Math.Min(Width * 0.44f - 10f, (bar.Y - 6f - top) / 2f);
+        float valH = 26f;
+        float rad = Math.Min((Width - 28f) * 0.5f, (bar.Y - 8f - top - valH - 6f) * 0.5f);
         if (rad < 14f) rad = 14f;
-        float cx = 10f + rad + 4f, cy = top + rad;
+        float cx = Width * 0.5f, cy = top + rad;
         RectangleF circle = new RectangleF(cx - rad, cy - rad, rad * 2, rad * 2);
 
         using (Pen p = new Pen(Pal.Line, 1f)) g.DrawEllipse(p, circle);
@@ -296,10 +296,8 @@ float barH = 16f;
         using (SolidBrush b = new SolidBrush(Pal.Panel)) g.FillEllipse(b, cx - 1.5f, cy - 1.5f, 3, 3);
 
         string txt = (Steer >= 0 ? "+" : "-") + Fmt.N(Math.Abs(Steer * 100), 0) + "%";
-        float tx0 = cx + rad + 10f;
-        int tw = (int)Math.Max(20f, Width - tx0 - 8f);
-        G.TextMidL(g, txt, F.ValS, Steer >= 0 ? Pal.Text : Pal.Amber,
-                   new Rectangle((int)tx0, (int)(cy - 14f), tw, 28), 0f);
+        G.TextMidC(g, txt, F.ValS, Steer >= 0 ? Pal.Text : Pal.Amber,
+                   new Rectangle(0, (int)(cy + rad + 4f), Width, (int)valH));
 
         // FFB bar: magnitude from the force, direction from the steering
         G.Fill(g, bar, Pal.PanelHi);
@@ -538,7 +536,12 @@ sealed class SessionPanel : Pane
         int footH = showFoot ? F.Small.Height + 7 : 2;
         int top = 4 + F.Cap.Height + 8;
         int bottom = Height - 4 - footH;
+        // On a short panel the pitch cannot stay legible with every row, so the
+        // tail (LAST / BEST / DELTA) is dropped instead of being squeezed into a
+        // 11 px band.
         int n = Math.Max(1, Rows.Count);
+        int fits = Math.Max(3, (bottom - top) / 14);
+        if (n > fits) n = fits;
         int avail = Math.Max(n * 11, bottom - top);
         int rowH = Math.Max(11, avail / n);
         LastRowH = rowH; LastTop = top; LastFootH = footH;
@@ -551,7 +554,7 @@ sealed class SessionPanel : Pane
         using (Font kf = new Font("Segoe UI", keyPt))
         using (Font vf = new Font("Consolas", rowPt, FontStyle.Bold))
         {
-            for (int i = 0; i < Rows.Count; i++)
+            for (int i = 0; i < n && i < Rows.Count; i++)
             {
                 int ry = top + i * rowH;
                 Rectangle band = new Rectangle(0, ry, Width, rowH);

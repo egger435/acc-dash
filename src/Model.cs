@@ -1,4 +1,4 @@
-// ===========================================================================
+﻿// ===========================================================================
 //  AccDash - formatting, the ring buffer, the snapshot and the clock
 //  src/Model.cs
 // ===========================================================================
@@ -19,6 +19,13 @@ static class Fmt
     public static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
 
     public static string I(double v) { return ((long)Math.Round(v)).ToString(Inv); }
+
+    /// "12,34 640x360" - for diagnostics
+    public static string Str(Rectangle r)
+    {
+        return r.Left.ToString(Inv) + "," + r.Top.ToString(Inv) + " "
+             + r.Width.ToString(Inv) + "x" + r.Height.ToString(Inv);
+    }
     public static string I(double v, int pad) { return ((long)Math.Round(v)).ToString(Inv).PadLeft(pad); }
     public static string N(double v, int dec) { return v.ToString("F" + dec.ToString(Inv), Inv); }
 
@@ -143,11 +150,14 @@ sealed class Snap
     // --- static
     public string Track, Car, TrackConfig, TyreName;
     public int SectorCount;
+    public int Sector;        // ACC currentSectorIndex, 0..2
+    public int LastSector;    // ACC lastSectorTime, ms
     public float MaxFuel;
 
     // --- world position (track map)
     public float WorldX, WorldZ;   // metres, AC world space: x/z are the ground plane
     public float Head;             // radians, car heading
+    public float Norm;             // 0..1 along the track, ACC's own spline position
 
     // --- meta
     public double Stamp;       // ms, from Clock.Now

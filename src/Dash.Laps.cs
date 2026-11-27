@@ -1,4 +1,4 @@
-// ===========================================================================
+﻿// ===========================================================================
 //  AccDash - lap list, recording and review
 //  src/Dash.Laps.cs
 // ===========================================================================
@@ -32,20 +32,39 @@ sealed partial class Dash
         try
         {
             string err;
-            LapData d = LapData.Parse(File.ReadAllText(file), file, out err);
+            LapData d = LapData.Parse(File.ReadAllBytes(file), file, out err);
             if (d == null)
             {
                 MessageBox.Show(this, "Could not read " + Path.GetFileName(file) + ":\n" + err, "Import", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
-            laps.Add(d);
-            EnterReview(d);
+            if (AddLap(d)) EnterReview(d);
+            else MessageBox.Show(this, "That lap is already in the list: " + d.Name, "Import",
+                                 MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
         catch (Exception ex)
         {
             MessageBox.Show(this, "Could not read " + Path.GetFileName(file) + ":\n" + ex.Message, "Import", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
     }
+    /// Adds a lap unless an identical one is already known.  Importing a file
+    /// that this session recorded itself used to give two rows for one lap.
+    bool AddLap(LapData d)
+    {
+        foreach (LapData x in laps)
+        {
+            if (ReferenceEquals(x, d)) return false;
+            string t0 = x.Track == null ? "" : x.Track.Trim().ToLowerInvariant();
+            string t1 = d.Track == null ? "" : d.Track.Trim().ToLowerInvariant();
+            if (t0 != t1) continue;
+            if (x.LapNo != d.LapNo) continue;
+            if (Math.Abs(x.LapMs - d.LapMs) > 5f) continue;
+            return false;
+        }
+        laps.Add(d);
+        return true;
+    }
+
     void EnterReview(LapData d)
     {
         if (d == null || d.Samples.Count < 2) return;
@@ -54,6 +73,10 @@ sealed partial class Dash
         revPlaying = false;
         revSpeed = 1.0;
         reviewOutline = BuildLapOutline(d);
+        refLap = FindReference(d);
+        deltaPane.Manual = false;
+        deltaPane.Set(d, refLap);
+        deltaPane.Visible = true;
         scrub.Max = d.Span;
         scrub.Pos = 0;
         scrub.Title = "LAP " + d.LapNo.ToString(Fmt.Inv) + "   " + Fmt.Mmss((int)d.LapMs)
@@ -67,6 +90,99 @@ sealed partial class Dash
         LayoutAll();
         FillReviewSnap();
         Render(Clock.Now);
+    }
+
+    /// Delta card while driving: the lap in progress against the best lap of
+    /// this track, rebuilt four times a second (cheap, but not per frame).
+    void UpdateLiveDelta(double now)
+    {
+        if (review != null) return;                 // review drives the card itself
+        if (now - liveDeltaAt < 400) return;
+        liveDeltaAt = now;
+        if (recLap == null || recLap.Samples.Count < 12)
+        {
+            deltaPane.Set(null, null);
+            deltaPane.Why = "waiting for the first lap";
+            deltaPane.Invalidate();
+            return;
+        }
+        refLap = FindReference(recLap);
+        deltaPane.Set(recLap, refLap);
+        deltaPane.Pos = recLap.LastT;
+        deltaPane.UpdateCursor();
+        deltaPane.Invalidate();
+    }
+
+    /// The best lap of the same track that this session knows about: recorded
+    /// laps and imported files both live in `laps`, the lap file itself carries
+    /// no notion of a best time.
+    void UseAutoReference()
+    {
+        if (review == null) return;
+        refLap = FindReference(review);
+        deltaPane.Manual = false;
+        deltaPane.Set(review, refLap);
+        deltaPane.Invalidate();
+    }
+
+    void PickCompareLap()
+    {
+        if (review == null) return;
+
+        List<LapData> pick = new List<LapData>();
+        foreach (LapData d in laps)
+        {
+            if (d == review) continue;
+            if (d.LapNo == review.LapNo && Math.Abs(d.LapMs - review.LapMs) < 5f) continue;
+            pick.Add(d);
+        }
+        if (pick.Count == 0)
+        {
+            MessageBox.Show(this,
+                            "There is no other lap to compare with yet.\n\n" +
+                            "Record another lap, or add a lap with LAPS > IMPORT...",
+                            "Compare", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        LapData chosen;
+        using (LapPick box = new LapPick(pick, review, refLap))
+        {
+            if (box.ShowDialog(this) != DialogResult.OK) return;
+            chosen = box.Chosen;
+        }
+        if (chosen == null) return;
+
+        if (!LapData.SameTrack(chosen.Track, review.Track))
+        {
+            MessageBox.Show(this,
+                            "That lap is from a different track.\n\n" +
+                            "This lap: " + review.Track + "\n" +
+                            "Picked lap: " + chosen.Track + "\n\n" +
+                            "You can only compare laps from the same track.",
+                            "Different track", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        refLap = chosen;
+        deltaPane.Manual = true;
+        deltaPane.Set(review, refLap);
+        deltaPane.Invalidate();
+    }
+
+    LapData FindReference(LapData cur)
+    {
+        LapData best = null;
+        string key = cur.Track == null ? "" : cur.Track.Trim().ToLowerInvariant();
+        foreach (LapData d in laps)
+        {
+            if (ReferenceEquals(d, cur) || d.Samples == null || d.Samples.Count < 8) continue;
+            if (d.LapMs < 1000f) continue;
+            string k = d.Track == null ? "" : d.Track.Trim().ToLowerInvariant();
+            if (k.Length == 0 || k != key) continue;
+            if (best == null || d.LapMs < best.LapMs) best = d;
+        }
+        return best;
     }
 
     void UpdatePlayLabel()
@@ -91,6 +207,8 @@ sealed partial class Dash
         holdFired = false;
         if (btnPlay != null) { btnPlay.Visible = false; btnLive.Visible = false; UpdatePlayLabel(); }
         scrub.Visible = false;
+        refLap = null;
+        liveDeltaAt = -1e9;
         ClearTraces();
         LayoutAll();
         ActiveControl = null;
@@ -117,6 +235,7 @@ sealed partial class Dash
         sn.WorldX = s.X;
         sn.WorldZ = s.Z;
         sn.Head = s.Head;
+        sn.Norm = s.S;
         sn.Track = review.Track;
         sn.Car = review.Car;
         sn.MaxRpm = review.MaxRpm > 500 ? review.MaxRpm : 8000;
@@ -124,7 +243,7 @@ sealed partial class Dash
         sn.RoadTemp = review.RoadTemp;
         sn.TrackGrip = review.Grip;
         sn.CurMs = (int)(reviewPos * 1000.0);
-        sn.CompletedLaps = Math.Max(1, review.LapNo);   // the lap being replayed
+        sn.CompletedLaps = Math.Max(1, review.LapNo) - 1;   // laps done before this one, so LAPS shows "LapNo"
         sn.TotalLaps = 0;
         sn.LastMs = (int)review.LapMs;
         sn.BestMs = 0;
@@ -144,7 +263,7 @@ sealed partial class Dash
         // a new lap starts when the counter moves on or the clock jumps back
         if (recLap == null || lapNo != recLapNo || cur + 1.5f < recLastT)
         {
-            CloseLap();
+            CloseLap(now - cur * 1000.0);
             recLap = new LapData();
             recLap.Track = sn.Track;
             recLap.Car = sn.Car;
@@ -153,6 +272,7 @@ sealed partial class Dash
             recLap.AirTemp = sn.AirTemp;
             recLap.RoadTemp = sn.RoadTemp;
             recLap.Grip = sn.TrackGrip;
+            recLap.WallT0 = now - cur * 1000.0;
             recLapNo = lapNo;
             recLastT = -1f;
             recLastAdd = -1e9;
@@ -160,7 +280,7 @@ sealed partial class Dash
 
         if (now - recLastAdd < 66.0) return;       // ~15 Hz, same as the charts
         recLastAdd = now;
-        recLap.Add(cur, sn.Gas, sn.Brake, sn.SteerNorm, sn.FinalFf, sn.Speed, sn.Gear, (int)sn.Rpm, sn.LatG, sn.LongG, sn.Fuel, sn.TyreF, sn.TyreR, sn.WorldX, sn.WorldZ, sn.Head);
+        recLap.Add(cur, sn.Gas, sn.Brake, sn.SteerNorm, sn.FinalFf, sn.Speed, sn.Gear, (int)sn.Rpm, sn.LatG, sn.LongG, sn.Fuel, sn.TyreF, sn.TyreR, sn.WorldX, sn.WorldZ, sn.Head, sn.Norm);
         recLastT = cur;
     }
 
@@ -200,23 +320,58 @@ sealed partial class Dash
             sn.WorldX = (float)(300.0 * Math.Cos(t * 0.28));
             sn.WorldZ = (float)(190.0 * Math.Sin(t * 0.28));
             sn.Head = (float)((t * 0.28 + Math.PI * 0.5) % (Math.PI * 2.0));
+            sn.Norm = (float)((t * 0.28) / (Math.PI * 2.0) % 1.0);
             RecordLap(now);
         }
-        CloseLap();
-        File.WriteAllText(outFile, laps.Count > 0 ? laps[laps.Count - 1].ToText() : "# no laps", new System.Text.UTF8Encoding(false));
+        CloseLap(now);
+        File.WriteAllBytes(outFile, laps.Count > 0 ? laps[laps.Count - 1].ToBytes() : new byte[0]);
     }
 
-    void CloseLap()
+    void CloseLap(double wall1)
     {
         if (recLap == null) return;
+        recLap.WallT1 = wall1;
         if (recLap.Samples.Count >= 20)
         {
             recLap.LapMs = sn.LastMs > 500 ? sn.LastMs : recLastT * 1000f;
-            laps.Add(recLap);
+
+            // a lap that did not drive the track (cut, reset, teleport, pit bug) has a
+            // distance far from the learned track length: throw it away instead of
+            // letting it pollute the lap list and break the comparisons
+            float dist = LapDistance(recLap);
+            float trackLen = outline != null && outline.Closed ? outline.LengthM : 0f;
+            bool bogus = trackLen > 300f && dist > 30f &&
+                         Math.Abs(dist - trackLen) > Math.Max(0.12f * trackLen, 80f);
+        if (bogus)
+            {
+                lapNote = "lap dropped: " + (dist / 1000f).ToString("0.00", Fmt.Inv) + " km driven, track is "
+                        + (trackLen / 1000f).ToString("0.00", Fmt.Inv) + " km";
+                lapNoteAt = Clock.Now;
+            }
+            else
+            {
+                laps.Add(recLap);
+                QueueClip(recLap);
+            }
         }
         recLap = null;
         recLapNo = -1;
     }
+    /// Distance the car actually covered during a lap, from its own samples.
+    static float LapDistance(LapData d)
+    {
+        if (d == null || d.Samples.Count < 8) return 0f;
+        float sum = 0f;
+        for (int i = 1; i < d.Samples.Count; i++)
+        {
+            float dx = d.Samples[i].X - d.Samples[i - 1].X;
+            float dz = d.Samples[i].Z - d.Samples[i - 1].Z;
+            float step = (float)Math.Sqrt(dx * dx + dz * dz);
+            if (step > 0.01f && step < 50f) sum += step;
+        }
+        return sum;
+    }
+
     /// The racing line the reviewed lap drove, decimated to a drawable polyline.
     static TrackOutline BuildLapOutline(LapData d)
     {

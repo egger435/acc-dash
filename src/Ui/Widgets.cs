@@ -105,6 +105,7 @@ sealed class StatusLamp : Pane
 sealed class FlatBtn : Pane
 {
     public string Caption = "";
+    public Font FontOverride;     // bigger ink for dialogs that are read at arm's length
     public bool Dimmed;          // drawn in the dim ink but still clickable
     public event EventHandler Hit;
 
@@ -129,7 +130,7 @@ sealed class FlatBtn : Pane
         G.Box(g, new Rectangle(0, 0, Width, Height), fill, hover ? Pal.Dim : Pal.Line);
         if (down)
             G.Box(g, new Rectangle(1, 1, Math.Max(1, Width - 2), Math.Max(1, Height - 2)), fill, Pal.Line);
-        G.TextMidC(g, Caption, F.SmallB, Dimmed ? Pal.Dim : Pal.Text, new Rectangle(0, 0, Width, Height));
+        G.TextMidC(g, Caption, FontOverride != null ? FontOverride : F.SmallB, Dimmed ? Pal.Dim : Pal.Text, new Rectangle(0, 0, Width, Height));
     }
 
     protected override void OnMouseEnter(EventArgs e) { base.OnMouseEnter(e); hover = true; Invalidate(); }

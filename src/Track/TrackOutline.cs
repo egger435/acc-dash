@@ -1,4 +1,4 @@
-// ===========================================================================
+﻿// ===========================================================================
 //  AccDash - learned track outline and its file format
 //  src/Track/TrackOutline.cs
 // ===========================================================================
@@ -21,6 +21,7 @@ using System.Windows.Forms;
 sealed class TrackOutline
 {
     public string Track = "", Config = "";
+
     public float LengthM;
     public DateTime When = DateTime.Now;
     public bool Closed;
@@ -140,6 +141,7 @@ sealed class TrackOutline
         }
         catch { return null; }
     }
+
 
     public string ToText()
     {

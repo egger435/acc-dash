@@ -1,4 +1,4 @@
-# ACC Telemetry Dashboard
+﻿# ACC Telemetry Dashboard
 
 <p align="right"><a href="README.md">中文</a> | <b>English</b></p>
 
@@ -44,10 +44,17 @@ acc-dash\
     Ui\Widgets.cs        data tile, status lamp, flat button
     Ui\Charts.cs         traces, steering gauge, pedal bars, G-G disc, big numbers, SESSION panel
     Ui\Slider.cs         TIME slider
+    Ui\Settings.cs       settings dialog (edits the ini, shows / clears the cache)
     Laps\LapData.cs      lap samples, LapData, .accdash file format
     Laps\LapBrowser.cs   lap list control and the LAPS dialog
     Track\TrackOutline.cs outline polyline and .map file format
     Track\TrackMap.cs    left-column track map widget
+    Ui\VideoPane.cs      video card
+    Video\Ff.cs          locating ffmpeg, capture arguments, game window rect
+    Video\LiveCapture.cs lap clip decoder (size / rate follow the lap file)
+    Video\VideoSpec.cs    clip size and frame rate (from the ini)
+    Video\Recorder.cs    1 s chunk recorder and per-lap clip builder
+    Dash.Video.cs        video card wiring: preview / recording / embedded replay
 ```
 
 ---
@@ -55,15 +62,15 @@ acc-dash\
 ## Keyboard shortcuts
 
 
-| Key     | Action                          |
+| Key     | Action                        |
 | --------- | ------------------------------- |
-| `F2`    | freeze / resume data (FREEZE)   |
-| `F3`    | clear the charts                |
-| `F4`    | save AccDash.ini                |
-| `F5`    | open the lap list               |
-| `F6`    | leave replay, back to live      |
-| `Space` | replay play / pause             |
-| `F11`   | toggle full screen              |
+| `F2`    | freeze / resume data (FREEZE) |
+| `F3`    | clear the charts              |
+| `F4`    | save AccDash.ini              |
+| `F5`    | open the lap list             |
+| `F6`    | leave replay, back to live    |
+| `Space` | replay play / pause           |
+| `F11`   | toggle full screen            |
 
 ---
 
@@ -101,10 +108,17 @@ TraceSeconds=10      ; chart time window, 3..60 s
 SpeedUnit=kmh        ; kmh | mph
 TempUnit=c           ; c | f
 GScale=2.0           ; full scale of the G-G disc, 0.5..4.0 g
-LongGSign=-1         ; -1 = braking is positive (default), +1 = braking is negative
+
+[video]
+Video=1              ; 1 = record one clip per lap, stored inside the lap file
+VideoW=320           ; width in pixels (160..1280, even)
+VideoH=180           ; height in pixels (90..720, even)
+VideoFps=24          ; frame rate (5..60)
+VideoCrf=26          ; quality: lower is sharper and bigger
+FfmpegPath=          ; empty = ffmpeg.exe / ffmpeg\bin\ffmpeg.exe next to the exe
 ```
 
-Changes take effect after a restart. After moving a slider, press `F4` (or `SAVE CFG`) to write it back.
+Changes take effect after a restart.
 
 ---
 

@@ -1,4 +1,4 @@
-// ===========================================================================
+﻿// ===========================================================================
 //  AccDash - lap list control and the laps dialog
 //  src/Laps/LapBrowser.cs
 // ===========================================================================
@@ -21,6 +21,7 @@ using System.Windows.Forms;
 sealed class LapList : Pane
 {
     public List<LapData> Rows;
+    public string TrackFilter = "";     // when set, rows of other tracks draw dim
     public int Sel = -1;
     public event EventHandler SelChanged;
     public event EventHandler Chosen;
@@ -61,6 +62,7 @@ sealed class LapList : Pane
             if (i == Sel) G.Fill(g, new Rectangle(0, y, Width, RowH), Pal.PanelHi);
             LapData d = Rows[i];
             Color c = d.FromFile ? Pal.Amber : Pal.Text;
+            if (TrackFilter.Length > 0 && !LapData.SameTrack(d.Track, TrackFilter)) c = Pal.Dim;
             G.TextMidL(g, d.Name, rowFont, i == Sel ? Pal.Text : c, new Rectangle(6, y, Width - 12, RowH), 0f);
         }
         // a hairline under the last row so the list does not look cut off
@@ -302,7 +304,7 @@ sealed class LapBrowser : Form
         if (fd.ShowDialog(this) != DialogResult.OK) return;
         try
         {
-            File.WriteAllText(fd.FileName, d.ToText());
+            File.WriteAllBytes(fd.FileName, d.ToBytes());
             SetHint("Exported " + Path.GetFileName(fd.FileName) + "  (" + d.Samples.Count.ToString(Fmt.Inv) + " samples)", Pal.Dim);
         }
         catch (Exception ex)
@@ -318,7 +320,7 @@ sealed class LapBrowser : Form
         fd.Filter = "ACC Dash lap (*.accdash;*.csv)|*.accdash;*.csv|All files (*.*)|*.*";
         if (fd.ShowDialog(this) != DialogResult.OK) return;
         string err;
-        LapData d = LapData.Parse(File.ReadAllText(fd.FileName), fd.FileName, out err);
+        LapData d = LapData.Parse(File.ReadAllBytes(fd.FileName), fd.FileName, out err);
         if (d == null)
         {
             MessageBox.Show(this, "Could not read this lap:\n" + err, "Import", MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -348,5 +350,158 @@ sealed class LapBrowser : Form
         string t = string.IsNullOrEmpty(d.Track) ? "lap" : d.Track;
         t = t.Replace(" ", "-").Replace("/", "-").Replace("\\", "-");
         return t + "-L" + d.LapNo.ToString(Fmt.Inv) + "-" + ((int)d.LapMs).ToString(Fmt.Inv) + ".accdash";
+    }
+}
+
+// Modal list used by the DELTA card: pick a lap that is already in the session
+// list.  Deliberately has no import/export/delete - adding laps is what the
+// LAPS dialog is for.
+sealed class LapPick : Form
+{
+    public LapData Chosen;
+
+    readonly LapData cur;
+    readonly LapList list;
+    readonly Label hint;
+    readonly FlatBtn bOk, bClose;
+
+    public LapPick(List<LapData> laps, LapData current, LapData preselect)
+    {
+        cur = current;
+        Text = "Compare with";
+        BackColor = Pal.Bg;
+        ForeColor = Pal.Text;
+        FormBorderStyle = FormBorderStyle.FixedDialog;
+        StartPosition = FormStartPosition.CenterParent;
+        AutoScaleMode = AutoScaleMode.None;
+        ClientSize = new Size(470, 330);
+        MinimizeBox = false;
+        MaximizeBox = false;
+        ShowInTaskbar = false;
+        Font = new Font("Segoe UI", 9f);
+        DoubleBuffered = true;
+
+        list = new LapList();
+        list.Rows = laps;
+        list.TrackFilter = current != null ? current.Track : "";
+        list.BackColor = Pal.Panel;
+        list.Chosen += delegate { Accept(); };
+        Controls.Add(list);
+        if (laps != null && laps.Count > 0)
+        {
+            list.Sel = 0;
+            if (preselect != null)
+                for (int i = 0; i < laps.Count; i++)
+                    if (ReferenceEquals(laps[i], preselect)) list.Sel = i;
+        }
+
+        hint = new Label();
+        hint.AutoSize = false;
+        hint.Font = new Font("Segoe UI", 8f);
+        hint.TextAlign = ContentAlignment.MiddleLeft;
+        hint.ForeColor = Pal.Dim;
+        hint.BackColor = Pal.Bg;
+        Controls.Add(hint);
+
+        bOk = new FlatBtn("COMPARE");
+        bOk.Hit += delegate { Accept(); };
+        Controls.Add(bOk);
+
+        bClose = new FlatBtn("CANCEL");
+        bClose.Hit += delegate { DialogResult = DialogResult.Cancel; Close(); };
+        Controls.Add(bClose);
+
+        list.SelChanged += delegate { RefreshHint(); };
+        Resize += delegate { DoLayout(); };
+        KeyPreview = true;
+        KeyDown += delegate(object s2, KeyEventArgs k)
+        {
+            if (k.KeyCode == Keys.Enter) { Accept(); k.Handled = true; }
+            else if (k.KeyCode == Keys.Escape) { DialogResult = DialogResult.Cancel; Close(); }
+        };
+
+        DoLayout();
+        RefreshHint();
+    }
+
+    LapData Sel
+    {
+        get
+        {
+            if (list.Rows == null || list.Sel < 0 || list.Sel >= list.Rows.Count) return null;
+            return list.Rows[list.Sel];
+        }
+    }
+
+    void DoLayout()
+    {
+        int w = ClientSize.Width, h = ClientSize.Height, pad = 12, btnH = 30, hintH = 22;
+        int by = h - pad - btnH;
+        int hintY = by - 6 - hintH;
+        list.Bounds = new Rectangle(pad, pad, w - pad * 2, Math.Max(80, hintY - 8 - pad));
+        hint.Bounds = new Rectangle(pad, hintY, w - pad * 2, hintH);
+        bClose.Bounds = new Rectangle(w - pad - 84, by, 84, btnH);
+        bOk.Bounds = new Rectangle(w - pad - 84 - 8 - 96, by, 96, btnH);
+    }
+
+    void RefreshHint()
+    {
+        LapData d = Sel;
+        if (d == null) { SetHint("no laps yet - add one with LAPS first", Pal.Amber); return; }
+        if (cur != null && !LapData.SameTrack(d.Track, cur.Track))
+        {
+            SetHint("different track (" + (d.Track.Length > 0 ? d.Track : "?") + ") - cannot compare", Pal.Amber);
+            return;
+        }
+        SetHint("pick a lap of this track, then COMPARE", Pal.Dim);
+    }
+
+    void SetHint(string text, Color c)
+    {
+        hint.Text = text;
+        hint.ForeColor = c;
+    }
+
+    void Accept()
+    {
+        LapData d = Sel;
+        if (d == null) return;
+        Chosen = d;
+        DialogResult = DialogResult.OK;
+        Close();
+    }
+
+    /// Renders the dialog to a png without a visible desktop (layout check).
+    public void ShotTo(string path)
+    {
+        FormBorderStyle = FormBorderStyle.None;
+        Show();
+        Application.DoEvents();
+        DoLayout();
+        Refresh();
+        using (Bitmap b = new Bitmap(ClientSize.Width, ClientSize.Height))
+        {
+            DrawToBitmap(b, new Rectangle(0, 0, b.Width, b.Height));
+            b.Save(path, System.Drawing.Imaging.ImageFormat.Png);
+        }
+        Close();
+    }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        try
+        {
+            int one = 1;
+            Native.DwmSetWindowAttribute(Handle, 20, ref one, 4);
+            Native.DwmSetWindowAttribute(Handle, 19, ref one, 4);
+            int caption = 0x000000;
+            Native.DwmSetWindowAttribute(Handle, 35, ref caption, 4);
+            int textCol = 0xE8E8E8;
+            Native.DwmSetWindowAttribute(Handle, 36, ref textCol, 4);
+            int border = 0x1A1A1A;
+            Native.DwmSetWindowAttribute(Handle, 34, ref border, 4);
+        }
+        catch { }
     }
 }

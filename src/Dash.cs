@@ -45,6 +45,9 @@ sealed partial class Dash : Form
     readonly List<LapData> laps = new List<LapData>();
     LapData recLap;              // lap being recorded right now
     int recLapNo = -1;
+    string lapNote = "";
+    bool calibAsked;
+    double lapNoteAt = -1e9;
     float recLastT = -1f;
     double recLastAdd = -1e9;
     bool recordTest;
@@ -79,6 +82,9 @@ sealed partial class Dash : Form
     int lapAnchor = -1;             // index in outline.Points where the current lap began
     double mapLastSave = -1e9;      // last time the unfinished outline was parked on disk
     TrackOutline reviewOutline;      // racing line of the lap being reviewed
+    DeltaPane deltaPane;             // delta card right of the video
+    LapData refLap;                  // best lap of this track, for the delta
+    double liveDeltaAt = -1e9;       // throttle for the live delta rebuild
 
 
     /// Called when ACC has been silent for a while: clear the snapshot so the
@@ -188,7 +194,7 @@ sealed partial class Dash : Form
 
     public Dash()
     {
-        Text = "ACC Telemetry Dashboard 1.5";
+        Text = "ACC Telemetry Dashboard 1.6";
         ClientSize = new Size(1500, 900);
         MinimumSize = new Size(1180, 700);
 
@@ -206,7 +212,7 @@ sealed partial class Dash : Form
         catch { }
 
         cfg = Cfg.Load(AppDomain.CurrentDomain.BaseDirectory);
-        shm.LongGSign = cfg.LongGSign;
+        Vid.Set(cfg.VideoW, cfg.VideoH, cfg.VideoFps);
 
         BuildHeader();
         BuildLeft();
@@ -215,6 +221,15 @@ sealed partial class Dash : Form
 
         map = new TrackMap();
         Controls.Add(map);
+
+        video = new VideoPane();
+        Controls.Add(video);
+
+        deltaPane = new DeltaPane();
+        deltaPane.Visible = false;
+        deltaPane.PickRef += delegate { PickCompareLap(); };
+        deltaPane.UseAuto += delegate { UseAutoReference(); };
+        Controls.Add(deltaPane);
 
         scrub = new Scrub();
         scrub.Visible = false;
@@ -234,9 +249,9 @@ sealed partial class Dash : Form
         UpdateTimeLabel();
         ApplyTraceWindow();
 
-        Shown += delegate { LayoutAll(); Refresh(); };
+        Shown += delegate { LayoutAll(); Refresh(); StartVideo(); };
         Resize += delegate { LayoutAll(); };
-        FormClosing += delegate { SaveCfg(); SavePartialMap(); };
+        FormClosing += delegate { SaveCfg(); SavePartialMap(); StopGrabber(); StopClipPlayer(); if (rec != null) rec.End(); };
         KeyDown += OnKey;
     }
 
@@ -252,7 +267,7 @@ sealed partial class Dash : Form
             Controls.Add(lamps[i]);
         }
 
-        btnSave = MkBtn("SAVE CFG", 104);
+        btnSave = MkBtn("SETTINGS", 104);
         btnClear = MkBtn("CLEAR", 84);
         btnPause = MkBtn("FREEZE", 88);
         btnLaps = MkBtn("LAPS", 76);
@@ -269,7 +284,7 @@ sealed partial class Dash : Form
         Controls.Add(btnLive);
         headButtons = new Button[] { btnLive, btnPlay, btnLaps, btnPause, btnClear, btnSave };
 
-        btnSave.Click += delegate { SaveCfg(); };
+        btnSave.Click += delegate { OpenSettings(); };
         btnLaps.Click += delegate { OpenLaps(); };
         btnClear.Click += delegate { ClearTraces(); };
         btnPause.Click += delegate { paused = !paused; btnPause.Text = paused ? "RESUME" : "FREEZE"; };
@@ -301,6 +316,32 @@ sealed partial class Dash : Form
             revSpeed = 1.0;
             UpdatePlayLabel();
         };
+    }
+
+    // Settings dialog: edits the ini graphically, shows the cache and the credit
+    void OpenSettings()
+    {
+        using (SettingsBox box = new SettingsBox(cfg, delegate
+        {
+            // the cache lives under <exe>\cache and may be open in ffmpeg right now
+            StopClipPlayer();
+            StopGrabber();
+            if (rec != null) rec.End();
+        }))
+        {
+            if (box.ShowDialog(this) != DialogResult.OK) return;
+        }
+
+        Ff.Locate(cfg.FfmpegPath);
+        Ff.ForceArea = cfg.VideoArea;
+        Ff.ForceOutput = cfg.VideoOutput;
+        Vid.Set(cfg.VideoW, cfg.VideoH, cfg.VideoFps);
+
+        timeSlider.Value = Math.Max(timeSlider.Min, Math.Min(timeSlider.Max, cfg.TraceSeconds));
+        UpdateTimeLabel();
+        ApplyTraceWindow();
+        Invalidate(true);
+        Render(Clock.Now);
     }
 
     Button MkBtn(string text, int w)

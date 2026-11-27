@@ -210,6 +210,18 @@ static class Program
         }
 
         try { Native.SetProcessDPIAware(); } catch { }
+        // keep a crash note: this is a winexe, an unhandled exception only
+        // shows a dialog nobody can copy the text out of
+        Application.ThreadException += delegate(object s2, System.Threading.ThreadExceptionEventArgs e2)
+        {
+            try { File.AppendAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "crash.txt"),
+                DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", Fmt.Inv) + Environment.NewLine + e2.Exception + Environment.NewLine + Environment.NewLine); } catch { }
+        };
+        AppDomain.CurrentDomain.UnhandledException += delegate(object s2, UnhandledExceptionEventArgs e2)
+        {
+            try { File.AppendAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "crash.txt"),
+                DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", Fmt.Inv) + " [domain]" + Environment.NewLine + e2.ExceptionObject + Environment.NewLine + Environment.NewLine); } catch { }
+        };
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
 
@@ -226,10 +238,14 @@ static class Program
             int warm = args.Length > 4 ? int.Parse(args[4]) : 9000;
             using (Dash d = new Dash())
             {
+
                 if (args.Length > 5) d.ShotLapFile = args[5];
                 if (args.Length > 6) d.ShotScrubAt = float.Parse(args[6], System.Globalization.CultureInfo.InvariantCulture);
                 if (args.Length > 7 && args[7] == "play") d.ShotPlay = true;
                 if (args.Length > 7 && args[7] == "fast") { d.ShotPlay = true; d.ShotFast = true; }
+                int firstRef = 8;
+                if (args.Length > 7 && args[7] != "play" && args[7] != "fast") firstRef = 7;
+                for (int i = firstRef; i < args.Length; i++) d.PreloadLaps.Add(args[i]);   // reference laps for the delta
                 d.ShotMode(args[1], w, h, warm);
             }
             return;
@@ -268,10 +284,33 @@ static class Program
             return;
         }
 
+        if (args.Length >= 2 && args[0] == "--windump")
+        {
+            File.WriteAllText(args[1], Ff.WindowDump(), Encoding.UTF8);
+            return;
+        }
+
+        if (args.Length >= 2 && args[0] == "--grabinfo")
+        {
+            GrabInfo(args[1]);
+            return;
+        }
+
+        if (args.Length >= 2 && args[0] == "--pwtest")
+        {
+            PwTest(args[1]);
+            return;
+        }
+
+        if (args.Length >= 2 && args[0] == "--captest")
+        {
+            CaptureTest(args.Length > 1 ? int.Parse(args[1]) : 6, args.Length > 2 ? args[2] : "captest.accdash");
+            return;
+        }
         if (args.Length >= 3 && args[0] == "--laptest")
         {
             string err0;
-            LapData a = LapData.Parse(File.ReadAllText(args[1]), args[1], out err0);
+            LapData a = LapData.Parse(File.ReadAllBytes(args[1]), args[1], out err0);
             System.Text.StringBuilder sb = new System.Text.StringBuilder();
             if (a == null)
             {
@@ -280,7 +319,7 @@ static class Program
             else
             {
                 string txt = a.ToText();
-                File.WriteAllText(args[2], txt, new System.Text.UTF8Encoding(false));
+                File.WriteAllBytes(args[2], a.ToBytes());
                 string err1;
                 LapData b = LapData.Parse(txt, args[2], out err1);
                 sb.AppendLine("track=" + a.Track + " car=" + a.Car + " lap=" + a.LapNo + " ms=" + a.LapMs + " samples=" + a.Samples.Count + " span=" + a.Span.ToString("0.000", Fmt.Inv));
@@ -319,12 +358,46 @@ static class Program
                 try
                 {
                     string err;
-                    LapData d = LapData.Parse(File.ReadAllText(args[i]), args[i], out err);
+                    LapData d = LapData.Parse(File.ReadAllBytes(args[i]), args[i], out err);
                     if (d != null) ls.Add(d);
                 }
                 catch { }
             }
             using (LapBrowser lb = new LapBrowser(ls)) lb.ShotTo(args[1]);
+            return;
+        }
+
+        if (args.Length >= 2 && args[0] == "--shotpick")
+        {
+            List<LapData> ls = new List<LapData>();
+            for (int i = 2; i < args.Length; i++)
+            {
+                try
+                {
+                    string err;
+                    LapData d = LapData.Parse(File.ReadAllBytes(args[i]), args[i], out err);
+                    if (d != null) ls.Add(d);
+                }
+                catch { }
+            }
+            LapData cur = ls.Count > 0 ? ls[0] : null;
+            using (LapPick lp = new LapPick(ls, cur, ls.Count > 1 ? ls[1] : null)) lp.ShotTo(args[1]);
+            return;
+        }
+
+        if (args.Length >= 2 && args[0] == "--shotsettings")
+        {
+            Cfg c = Cfg.Load(AppDomain.CurrentDomain.BaseDirectory);
+            using (SettingsBox box = new SettingsBox(c, null)) box.ShotTo(args[1]);
+            return;
+        }
+
+        // write a fresh ini template (does not touch the one next to the exe)
+        if (args.Length >= 2 && args[0] == "--iniout")
+        {
+            Cfg t = Cfg.Load(null);
+            t.Path = args[1];
+            t.Save();
             return;
         }
 
@@ -348,4 +421,167 @@ static class Program
         Application.Run(new Dash());
     }
 
+    /// Records a few seconds of whatever is on screen and cuts a lap file with
+    /// the clip embedded, so the whole capture -> clip -> container path can be
+    /// checked without ACC running.
+    /// <summary>
+    /// Writes what the capture path sees: screens, detected game window, the
+    /// resulting ddagrab source, and whether a frame can actually be grabbed.
+    /// </summary>
+    /// Diagnostic: tries PrintWindow under several DPI contexts and flags, so we
+    /// can see which combination returns real pixels inside this process.
+    static void PwTest(string file)
+    {
+        System.Text.StringBuilder sb = new System.Text.StringBuilder();
+        bool found;
+        Ff.GameArea(out found);
+        IntPtr h = Ff.LastWindow;
+        sb.AppendLine("hwnd=" + ((long)h).ToString(Fmt.Inv) + " found=" + found);
+        IntPtr[] ctx = { IntPtr.Zero, new IntPtr(-1), new IntPtr(-2), new IntPtr(-3), new IntPtr(-4) };
+        string[] names = { "leave", "unaware", "system", "pm1", "pm2" };
+        for (int ci = 0; ci < ctx.Length; ci++)
+        {
+            IntPtr prev = IntPtr.Zero;
+            if (ctx[ci] != IntPtr.Zero) { try { prev = Native.SetThreadDpiAwarenessContext(ctx[ci]); } catch { } }
+            for (int flag = 0; flag <= 2; flag += 2)
+            {
+                Native.RECT r;
+                Native.GetWindowRect(h, out r);
+                int w = r.Right - r.Left, hh = r.Bottom - r.Top;
+                double m = -1;
+                try
+                {
+                    using (Bitmap b = new Bitmap(w, hh, System.Drawing.Imaging.PixelFormat.Format32bppRgb))
+                    {
+                        using (Graphics g = Graphics.FromImage(b))
+                        {
+                            IntPtr dc = g.GetHdc();
+                            bool ok = Native.PrintWindow(h, dc, flag);
+                            g.ReleaseHdc(dc);
+                        }
+                        long sum = 0; int n = 0;
+                        for (int y = 0; y < hh; y += 9) for (int x = 0; x < w; x += 9) { Color c = b.GetPixel(x, y); sum += c.R + c.G + c.B; n++; }
+                        m = n == 0 ? 0 : sum / (double)n;
+                    }
+                }
+                catch (Exception ex) { sb.AppendLine("  " + names[ci] + " flag" + flag + " error " + ex.Message); continue; }
+                sb.AppendLine("  " + names[ci] + " flag" + flag + " size=" + w + "x" + hh + " mean=" + m.ToString("0.0"));
+            }
+            if (prev != IntPtr.Zero) { try { Native.SetThreadDpiAwarenessContext(prev); } catch { } }
+        }
+        File.WriteAllText(file, sb.ToString(), Encoding.UTF8);
+    }
+    static void GrabInfo(string file)
+    {
+        System.Text.StringBuilder sb = new System.Text.StringBuilder();
+        try
+        {
+            Cfg cfg = Cfg.Load(AppDomain.CurrentDomain.BaseDirectory);
+            Ff.Locate(cfg.FfmpegPath);
+            Ff.ForceArea = cfg.VideoArea;
+            Ff.ForceOutput = cfg.VideoOutput;
+            sb.AppendLine("ffmpeg=" + Ff.Exe + " ready=" + Ff.Ready);
+            if (Ff.Ready) sb.AppendLine("version=" + Ff.Probe());
+
+            Screen[] all = Screen.AllScreens;
+            for (int i = 0; i < all.Length; i++)
+                sb.AppendLine("screen[" + i + "] " + all[i].DeviceName + " " + Fmt.Str(all[i].Bounds)
+                              + (all[i].Primary ? " primary" : ""));
+
+            bool found;
+            Rectangle area = Ff.GameArea(out found);
+            sb.AppendLine("--- detection ---");
+            sb.AppendLine(Ff.Diag.TrimEnd());
+            sb.AppendLine("found=" + found + " area=" + Fmt.Str(area) + " hwnd=" + ((long)Ff.LastWindow).ToString(Fmt.Inv));
+
+            if (found && Ff.LastWindow != IntPtr.Zero)
+            {
+                FrameGrabber grab = new FrameGrabber();
+                grab.Area = area;
+                grab.Start(Ff.LastWindow);
+                for (int i = 0; i < 18; i++) System.Threading.Thread.Sleep(100);   // let the fallback kick in
+                int seq = grab.Seq;
+                string png = System.IO.Path.ChangeExtension(file, ".png");
+                int lit = 0;
+                using (Bitmap b = new Bitmap(Vid.W, Vid.H, System.Drawing.Imaging.PixelFormat.Format32bppRgb))
+                {
+                    using (Graphics g = Graphics.FromImage(b))
+                    {
+                        if (!grab.Draw(g, new Rectangle(0, 0, Vid.W, Vid.H)))
+                            sb.AppendLine("frame test: no frame drawn  err=" + grab.Error);
+                    }
+                    b.Save(png, System.Drawing.Imaging.ImageFormat.Png);
+                    for (int y = 0; y < b.Height; y += 4)
+                        for (int x = 0; x < b.Width; x += 4)
+                        {
+                            Color c = b.GetPixel(x, y);
+                            if (c.R + c.G + c.B > 24) lit++;
+                        }
+                }
+                grab.Stop();
+                sb.AppendLine("frame test: seq=" + seq + " shot=" + grab.ShotW + "x" + grab.ShotH
+                              + " mean=" + grab.Mean.ToString("0.0", Fmt.Inv)
+                              + " png=" + png + " lit samples=" + lit
+                              + "  err=" + grab.Error);
+            }
+        }
+        catch (Exception ex) { sb.AppendLine("error: " + ex.Message); }
+        File.WriteAllText(file, sb.ToString(), Encoding.UTF8);
+    }
+    static void CaptureTest(int seconds, string lapOut)
+    {
+        StringBuilder sb = new StringBuilder();
+        Ff.Locate("");
+        sb.AppendLine("ffmpeg=" + Ff.Exe + "  ready=" + Ff.Ready + "  " + Ff.Error);
+        if (!Ff.Ready) { File.WriteAllText("captest.txt", sb.ToString()); return; }
+
+        bool found;
+        Rectangle r = Ff.GameArea(out found);
+        sb.AppendLine("game window=" + Fmt.Str(r) + "  game=" + found + "  hwnd=" + ((long)Ff.LastWindow).ToString(Fmt.Inv));
+        if (!found || Ff.LastWindow == IntPtr.Zero)
+        {
+            sb.AppendLine("no game window - start ACC first");
+            File.WriteAllText("captest.txt", sb.ToString());
+            return;
+        }
+
+        Recorder rec = new Recorder();
+        FrameGrabber grab = new FrameGrabber();
+        grab.Area = r;
+        grab.Sink = delegate(byte[] buf, int off) { rec.Push(buf, off); };
+        grab.Start(Ff.LastWindow);
+
+        double t0 = Clock.Now;
+        rec.Begin();
+        for (int i = 0; i < seconds * 10; i++) { System.Threading.Thread.Sleep(100); rec.Tick(true); }
+        double t1 = Clock.Now;
+        System.Threading.Thread.Sleep(400);        // let the writer drain
+        rec.End();
+        grab.Stop();
+        int chunks = 0;
+        try { chunks = Directory.GetFiles(Recorder.Root, "seg_*.mkv", SearchOption.AllDirectories).Length; } catch { }
+        sb.AppendLine("captured " + ((t1 - t0) / 1000.0).ToString("0.0", Fmt.Inv) + " s  frames=" + grab.Seq
+                      + "  chunks=" + chunks + "  dropped=" + rec.Dropped + "  frame mean=" + rec.LastFrameMean.ToString("0.0", Fmt.Inv)
+                      + "  grab mean=" + grab.Mean.ToString("0.0", Fmt.Inv) + " screen=" + grab.UseScreen
+                      + "  err=" + rec.Error);
+
+        float vt0, vms;
+        byte[] b = rec.Clip(t0 + 600, t1 - 200, out vt0, out vms);
+        sb.AppendLine("clip=" + (b == null ? 0 : b.Length) + " bytes  vt0=" + vt0.ToString("0.000", Fmt.Inv) + "  dur=" + vms.ToString("0.000", Fmt.Inv) + "  err=" + rec.Error);
+        if (b != null)
+        {
+            LapData d = new LapData();
+            d.Track = "test"; d.Car = "test"; d.LapNo = 1;
+            d.LapMs = (float)(t1 - t0);
+            for (int i = 0; i < 20; i++) d.Add(i * 1f, 0.5f, 0.2f, 0.1f, 0.3f, 100f, 3, 6000, 0.5f, 0.2f, 20f, 80f, 82f, 10f * i, 0f, i * 0.1f, i / 20f);
+            d.VideoBytes = b; d.VideoT0 = vt0; d.VideoMs = vms * 1000f;
+            byte[] file = d.ToBytes();
+            File.WriteAllBytes(lapOut, file);
+            string err;
+            LapData back = LapData.Parse(file, lapOut, out err);
+            sb.AppendLine("file=" + file.Length + " bytes  reparse=" + (back != null) + "  hasVideo=" + (back != null && back.HasVideo)
+                + "  samples=" + (back == null ? 0 : back.Samples.Count) + "  vt0=" + (back == null ? 0f : back.VideoT0).ToString("0.000", Fmt.Inv) + "  err=" + err);
+        }
+        File.WriteAllText("captest.txt", sb.ToString());
+    }
 }
