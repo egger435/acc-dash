@@ -270,7 +270,8 @@ sealed partial class Dash
                       + "  outline=" + (deltaPane.Outline == null ? "null"
                           : (deltaPane.Outline.Points.Count.ToString(Fmt.Inv) + " pts "
                              + deltaPane.Outline.LengthM.ToString("0", Fmt.Inv) + " m closed=" + deltaPane.Outline.Closed))
-                      + "  curS=" + deltaPane.SampleInfo(0) + "  refS=" + deltaPane.SampleInfo(1));
+                      + "  rough=" + deltaPane.Roughness().ToString("0.000", Fmt.Inv)
+        + "  curS=" + deltaPane.SampleInfo(0) + "  refS=" + deltaPane.SampleInfo(1));
         sb.AppendLine("time slider" + timeSlider.Bounds);
         sb.AppendLine("time label " + timeLbl.Bounds);
         sb.AppendLine("ini label  " + iniLbl.Bounds);

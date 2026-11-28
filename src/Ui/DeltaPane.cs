@@ -41,6 +41,8 @@ sealed class DeltaPane : Pane
 
     float[] pTime;                      // reference time at 0, 1/N, 2/N .. 1
     bool byProg;
+    bool byDist;                    // aligned on the odometer, not on progress
+    float[] curDistCut, refDistCut; // distances up to the lap line
 
     public float Delta;                 // seconds, + means slower than the reference
     public bool HasRef;
@@ -129,8 +131,44 @@ sealed class DeltaPane : Pane
         }
 
         byProg = curProg != null && refProg != null && curS != null && refS != null;
-        ByProg = byProg;
         pTime = null;
+        byDist = false;
+        curDistCut = null;
+        refDistCut = null;
+
+        // Distance is the smoother yardstick.  ACC's normalized position is quantized
+        // to a ten-thousandth of a lap (about a metre here) and wobbles by a little
+        // more, so two laps compared through it give two staircases and the delta
+        // curve looks like a saw-tooth.  The odometers are continuous, so align on
+        // distance whenever both laps cover the same lap.
+        if (curDist != null && refDist != null)
+        {
+            int nc = curS != null ? curS.Count - 1 : curDist.Length - 1;
+            int nr = refS != null ? refS.Count - 1 : refDist.Length - 1;
+            curDistCut = Slice(curDist, nc);
+            refDistCut = Slice(refDist, nr);
+            float lc = curDistCut[curDistCut.Length - 1];
+            float lr = refDistCut[refDistCut.Length - 1];
+            if (lc > 100f && lr > 100f && Math.Abs(lc - lr) < 0.12f * Math.Max(lc, lr))
+            {
+                if (curS == null) curS = Cut(cur, nc);
+                if (refS == null) refS = Cut(refLap, nr);
+                if (curS != null && refS != null && curS[curS.Count - 1].T > 5f
+                    && refS[refS.Count - 1].T > 5f)
+                {
+                    byDist = true;
+                    byProg = false;
+                    ByProg = false;
+                    HasRef = true;
+                    Approx = false;
+                    return;
+                }
+                curDistCut = null;
+                refDistCut = null;
+            }
+        }
+
+        ByProg = byProg;
         if (byProg)
         {
             // Both runs must actually cover the lap, otherwise the lookup would keep
@@ -156,6 +194,25 @@ sealed class DeltaPane : Pane
         return;
     }
 
+    /// Mean change of the delta between points half a second apart: how jagged the
+    /// curve is.  Used by the layout dump to check the smoothing.
+    public float Roughness()
+    {
+        if (!HasRef || Cur == null) return 0f;
+        float span = curS != null ? curS[curS.Count - 1].T : Cur.Span;
+        if (span < 5f) return 0f;
+        float sum = 0f, prev = 0f;
+        int n = 0;
+        bool have = false;
+        for (float tt = 0f; tt <= span; tt += 0.5f)
+        {
+            float d = tt - RefTimeAt(DistanceAtTime(tt));
+            if (have) { sum += Math.Abs(d - prev); n++; }
+            prev = d; have = true;
+        }
+        return n > 0 ? sum / n : 0f;
+    }
+
     /// Debug only: what the alignment ended up with (0 = current lap, 1 = reference).
     public string SampleInfo(int which)
     {
@@ -165,6 +222,24 @@ sealed class DeltaPane : Pane
         return s.Count.ToString(Fmt.Inv) + " samples, prog " + p[0].ToString("0.000", Fmt.Inv)
                + "->" + p[p.Length - 1].ToString("0.000", Fmt.Inv)
                + ", t " + s[0].T.ToString("0.0", Fmt.Inv) + "->" + s[s.Count - 1].T.ToString("0.0", Fmt.Inv);
+    }
+
+    /// The first n+1 entries of an array (n may exceed the length).
+    static float[] Slice(float[] a, int n)
+    {
+        if (a == null || a.Length == 0) return null;
+        if (n < 0) n = 0;
+        if (n > a.Length - 1) n = a.Length - 1;
+        float[] r = new float[n + 1];
+        Array.Copy(a, r, n + 1);
+        return r;
+    }
+
+    /// The distance the current lap had covered at the lap line.
+    float LastDistance()
+    {
+        if (byDist && curDistCut != null) return curDistCut[curDistCut.Length - 1];
+        return 1f;
     }
 
     /// The samples up to the lap line; everything the game reported after the line
@@ -248,11 +323,31 @@ sealed class DeltaPane : Pane
         }
         if (cut < 0 && allowEnd) cut = r.Length - 1;         // the last sample is the line
         if (cut < 4) return null;                            // no lap line inside this lap
-        for (int i = 1; i <= cut; i++) if (r[i] < r[i - 1]) r[i] = r[i - 1];   // jitter is not progress
-        float baseS = r[0], span = r[cut] - baseS;
+
+        // ACC's normalized position has four decimals (about a metre on a 7 km lap)
+        // and wobbles a little; clamping it alone turns the signal into a staircase,
+        // and two independent staircases make the delta curve saw-tooth instead of
+        // the smooth line the game shows.  A short moving average first, then the
+        // monotone clamp, gives a smooth position again.
+        float[] sm = new float[cut + 1];
+        for (int i = 0; i <= cut; i++)
+        {
+            float sum = 0f; int n = 0;
+            for (int k = i - 2; k <= i + 2; k++)
+            {
+                if (k < 0 || k > cut) continue;
+                sum += r[k]; n++;
+            }
+            sm[i] = n > 0 ? sum / n : r[i];
+        }
+        sm[0] = r[0];
+        sm[cut] = r[cut];
+        for (int i = 1; i <= cut; i++) if (sm[i] < sm[i - 1]) sm[i] = sm[i - 1];
+
+        float baseS = sm[0], span = sm[cut] - baseS;
         if (span < 0.5f) return null;
         float[] o = new float[cut + 1];
-        for (int i = 0; i <= cut; i++) o[i] = (r[i] - baseS) / span;
+        for (int i = 0; i <= cut; i++) o[i] = (sm[i] - baseS) / span;
         o[cut] = 1f;
         return o;
     }
@@ -332,6 +427,7 @@ sealed class DeltaPane : Pane
 
     float RefTimeAt(float dist)
     {
+        if (byDist) return RefTimeAtDist(dist);
         if (byProg) return RefTimeAtProg(dist);
         if (gridTime == null || gridTime.Length == 0) return 0f;
         int i = (int)(dist / Step);
@@ -340,6 +436,23 @@ sealed class DeltaPane : Pane
         float d0 = gridDist[i], d1 = gridDist[i + 1];
         float f = d1 > d0 ? (dist - d0) / (d1 - d0) : 0f;
         return gridTime[i] + (gridTime[i + 1] - gridTime[i]) * f;
+    }
+
+    /// Time the reference lap needed to cover a distance (odometer alignment).
+    float RefTimeAtDist(float dist)
+    {
+        if (Ref == null || refS == null || refDistCut == null || refDistCut.Length < 2) return 0f;
+        int lo = 0, hi = refDistCut.Length - 1;
+        if (dist <= refDistCut[lo]) return refS[lo].T;
+        if (dist >= refDistCut[hi]) return refS[hi].T;
+        while (hi - lo > 1)
+        {
+            int mid = (lo + hi) / 2;
+            if (refDistCut[mid] <= dist) lo = mid; else hi = mid;
+        }
+        float d0 = refDistCut[lo], d1 = refDistCut[hi];
+        float f = d1 > d0 ? (dist - d0) / (d1 - d0) : 0f;
+        return refS[lo].T + (refS[hi].T - refS[lo].T) * f;
     }
 
     /// Time (seconds into the current lap) when it reached a distance.
@@ -367,12 +480,12 @@ sealed class DeltaPane : Pane
         if (!HasRef || Cur == null) { Delta = 0f; return; }
         float t = (float)Pos;
         if (t < 0f) t = 0f;
-        float end = ByProg && curS != null ? curS[curS.Count - 1].T : Cur.Span;
+        float end = curS != null ? curS[curS.Count - 1].T : Cur.Span;
         if (t > end) t = end;
         Delta = t - RefTimeAt(DistanceAtTime(t));
         // at the line the delta must read exactly the lap time difference
         if (Cur.LapMs > 1000f && Ref.LapMs > 1000f && t >= end - 0.12f)
-            Delta = end - RefTimeAtProg(1f);
+            Delta = end - RefTimeAt(LastDistance());
     }
 
     protected override void OnMouseUp(MouseEventArgs e)
@@ -525,6 +638,22 @@ sealed class DeltaPane : Pane
     /// Distance travelled at a lap time; linear between samples.
     float DistanceAtTime(float t)
     {
+        if (byDist && curS != null && curDistCut != null)
+        {
+            List<LapSample> cs = curS;
+            if (t <= cs[0].T) return curDistCut[0];
+            int hi0 = cs.Count - 1;
+            if (t >= cs[hi0].T) return curDistCut[hi0];
+            int lo0 = 0, hi1 = hi0;
+            while (hi1 - lo0 > 1)
+            {
+                int mid = (lo0 + hi1) / 2;
+                if (cs[mid].T <= t) lo0 = mid; else hi1 = mid;
+            }
+            float sp = cs[hi1].T - cs[lo0].T;
+            float u = sp > 0.0001f ? (t - cs[lo0].T) / sp : 0f;
+            return curDistCut[lo0] + (curDistCut[hi1] - curDistCut[lo0]) * u;
+        }
         if (byProg)
         {
             List<LapSample> cs = curS;
