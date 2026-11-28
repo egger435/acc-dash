@@ -1,4 +1,4 @@
-﻿// ===========================================================================
+// ===========================================================================
 //  AccDash - formatting, the ring buffer, the snapshot and the clock
 //  src/Model.cs
 // ===========================================================================
@@ -148,7 +148,7 @@ sealed class Snap
     public int RainIntensity;
 
     // --- static
-    public string Track, Car, TrackConfig, TyreName;
+    public string Track = "", Car = "", TrackConfig = "", TyreName = "";
     public int SectorCount;
     public int Sector;        // ACC currentSectorIndex, 0..2
     public int LastSector;    // ACC lastSectorTime, ms

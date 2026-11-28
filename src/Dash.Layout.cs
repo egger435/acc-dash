@@ -36,10 +36,11 @@ sealed partial class Dash
         int btnLeft = bx;
 
         int lampW = 150;
+        int nl = lamps.Length;
         int room = btnLeft - 12 - 12;
-        if (5 * (lampW + 8) > room) lampW = Math.Max(84, (room - 5 * 8) / 5);
-        else if (W > 1700) lampW = Math.Min(260, (room - 5 * 8) / 5);   // wide: spread the lamps out
-        for (int i = 0; i < 5; i++)
+        if (nl * (lampW + 8) > room) lampW = Math.Max(74, (room - nl * 8) / nl);
+        else if (W > 1700) lampW = Math.Min(240, (room - nl * 8) / nl);   // wide: spread the lamps out
+        for (int i = 0; i < nl; i++)
         {
             lamps[i].Bounds = new Rectangle(12 + i * (lampW + 8), 4, lampW, 44);
         }

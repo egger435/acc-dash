@@ -260,6 +260,7 @@ static class Program
             {
                 d.FakeLive = true;
                 d.SimSave = Array.IndexOf(args, "--simsave") >= 0;
+                d.SimRestart = Array.IndexOf(args, "--simrestart") >= 0;
                 d.ShotMode(args[1], w, h, warm);
             }
             return;
@@ -523,6 +524,8 @@ static class Program
                               + " mean=" + grab.Mean.ToString("0.0", Fmt.Inv)
                               + " png=" + png + " lit samples=" + lit
                               + "  err=" + grab.Error);
+                sb.AppendLine("grab rate=" + grab.RateFps + " fps  ms=" + grab.Ms.ToString("0.0", Fmt.Inv)
+                              + "  fastblit=" + grab.FastBlit + "  screen=" + grab.UseScreen);
             }
         }
         catch (Exception ex) { sb.AppendLine("error: " + ex.Message); }

@@ -21,6 +21,8 @@ sealed partial class Dash
     Rectangle capArea;               // where the game window is, refreshed once a second
     IntPtr capHwnd;
     double capCheckAt = -1e9;
+    int grabSeq = -1;                // last frame number seen from the grabber
+    double grabSeqAt = -1e9;
     Recorder rec;                    // 1 s chunk recorder, running while driving
 
     LiveCapture clipCap;             // decoder for the embedded lap clip
@@ -70,7 +72,13 @@ sealed partial class Dash
         {
             StopClipPlayer();
             video.Live = null;
-            video.Note = review.FromFile ? "no video in this file" : "no video for this lap";
+            clipFor = null;                   // restart as soon as the clip is ready
+            if (review.VideoState == 1)
+                video.Note = "video is still being encoded - it plays here as soon as it is ready";
+            else if (review.VideoState == 3)
+                video.Note = "no video for this lap (encoding failed)";
+            else
+                video.Note = review.FromFile ? "no video in this file" : "no video for this lap";
             video.Invalidate();
             return;
         }
@@ -142,10 +150,15 @@ sealed partial class Dash
         if (rec == null) rec = new Recorder();
         rec.Crf = cfg.VideoCrf;
 
+        // The capture pipeline stays warm the whole time the car is on track:
+        // starting it at the timing line (or stopping it there) spawned ffmpeg and
+        // the capture thread exactly when the player crossed the line, which showed
+        // up as a stutter and a REC lamp that came on late.  The lap gate now only
+        // decides whether a lap ends up in the list.
         bool want = review == null && sn.Live && !recordTest && Ff.Ready;
         // finding the game window walks the process list, so it runs at most
         // once a second and the answer is reused by every tick in between
-        if (now - capCheckAt > 1000)
+        if (now - capCheckAt > 5000)        // walking the process table is slow: keep it rare
         {
             capCheckAt = now;
             bool found = false;
@@ -161,6 +174,14 @@ sealed partial class Dash
             }
             if (!found) capArea = Rectangle.Empty;
         }
+        // the offline sim has no game window: tape the whole screen so the
+        // recorder and the lap gate can be exercised without ACC
+        if (want && FakeLive && (capHwnd == IntPtr.Zero || capArea.Width < 64))
+        {
+            capArea = Screen.PrimaryScreen.Bounds;
+            capHwnd = Native.GetShellWindow();
+        }
+
         Rectangle area = capArea;
         if (want && (capHwnd == IntPtr.Zero || area.Width < 64)) want = false;   // never record the desktop
 
@@ -175,7 +196,7 @@ sealed partial class Dash
         {
             StopGrabber();
             grab = new FrameGrabber();
-            grab.Fps = Vid.Fps;
+            grab.Fps = cfg.GrabFps > 0 ? (int)G.Clamp(cfg.GrabFps, 5, 30) : Vid.Fps;
             grab.Area = area;
             grab.Sink = delegate(byte[] buf, int off) { if (rec != null) rec.Push(buf, off); };
             grab.Start(capHwnd);
@@ -189,6 +210,18 @@ sealed partial class Dash
             // follow the window: a resolution change moves the capture region
             if (Math.Abs(area.Width - grab.Area.Width) > 4 || Math.Abs(area.Height - grab.Area.Height) > 4)
                 grab.Area = area;
+
+            // A capture that stops producing frames would leave the recorder
+            // duplicating one picture (the menu screen) for the whole lap, so
+            // notice the stall and start over with a fresh window lookup.
+            if (grab.Seq != grabSeq) { grabSeq = grab.Seq; grabSeqAt = now; }
+            else if (now - grabSeqAt > 1500)
+            {
+                Recorder.Log("grabber stalled " + (now - grabSeqAt).ToString("0", Fmt.Inv)
+                             + " ms (errors=" + grab.Errors.ToString(Fmt.Inv) + ") - restarting");
+                StopGrabber();
+                capCheckAt = -1e9;
+            }
         }
 
         rec.Tick(want);
@@ -203,12 +236,15 @@ sealed partial class Dash
         if (grab == null) return;
         grab.Stop();
         grab = null;
+        grabSeq = -1;
+        grabSeqAt = -1e9;
     }
 
     void QueueClip(LapData d)
     {
         if (NoVideo || !cfg.Video || rec == null || d == null) return;
         if (d.WallT1 - d.WallT0 < 1500) return;
+        d.VideoState = 1;                     // the lap list shows "processing"
         LapData lap = d;
         Recorder r = rec;
         r.ClipPending(lap.WallT0);        // the trimmer must not eat these chunks
@@ -216,17 +252,21 @@ sealed partial class Dash
         {
             try
             {
+                // let the new lap get going before encoding: the clip job competes
+                // for CPU with the game right after the line
+                System.Threading.Thread.Sleep(12000);
                 float vt0, vms;
                 byte[] b = r.Clip(lap.WallT0, lap.WallT1, out vt0, out vms);
-                if (b == null) return;
+                if (b == null) { lap.VideoState = 3; return; }
                 lap.VideoBytes = b;
                 lap.VideoT0 = vt0;
                 lap.VideoMs = vms * 1000f;
                 lap.VideoW = Vid.W;
                 lap.VideoH = Vid.H;
                 lap.VideoFps = Vid.Fps;
+                lap.VideoState = 2;
             }
-            catch { }
+            catch { lap.VideoState = 3; }
             finally { r.ClipDone(); }
         });
     }

@@ -26,6 +26,7 @@ sealed class Cfg
 
     // --- lap video
     public bool Video = true;            // record one clip per lap
+    public int GrabFps = 24;             // capture rate; frames are repeated if it is lower
     public int VideoCrf = 26;            // x264 quality, lower = bigger
     public int VideoW = 320;             // clip size and frame rate, see [video] below
     public int VideoH = 180;
@@ -59,6 +60,7 @@ sealed class Cfg
                     case "tempunit": c.TempUnit = v.ToLowerInvariant() == "f" ? "f" : "c"; break;
                     case "gscale": c.GScale = (float)Math.Max(0.5, Math.Min(4.0, ToDouble(v, 2.0))); break;
                     case "video": c.Video = ToBool(v, true); break;
+                    case "grab fps": c.GrabFps = Math.Max(5, Math.Min(30, ToInt(v, 24))); break;
                     case "videocrf": c.VideoCrf = Math.Max(16, Math.Min(34, ToInt(v, 26))); break;
                     case "videow": c.VideoW = Math.Max(160, Math.Min(1280, ToInt(v, 320))); break;
                     case "videoh": c.VideoH = Math.Max(90, Math.Min(720, ToInt(v, 180))); break;
@@ -99,6 +101,9 @@ sealed class Cfg
             sb.AppendLine("VideoW=" + VideoW.ToString(Fmt.Inv));
             sb.AppendLine("VideoH=" + VideoH.ToString(Fmt.Inv));
             sb.AppendLine("VideoFps=" + VideoFps.ToString(Fmt.Inv));
+            sb.AppendLine("; how often the screen is grabbed (5..30).  A lower rate costs the");
+            sb.AppendLine("; game much less; frames are repeated to keep VideoFps in the file");
+            sb.AppendLine("grab fps=" + GrabFps.ToString(Fmt.Inv));
             sb.AppendLine("; x264 quality, 16 (best, big) .. 34 (small)");
             sb.AppendLine("VideoCrf=" + VideoCrf.ToString(Fmt.Inv));
             sb.AppendLine("; ffmpeg.exe to use; empty = ffmpeg.exe or ffmpeg\\bin\\ffmpeg.exe next to");

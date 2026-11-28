@@ -1,4 +1,4 @@
-﻿//  DeltaPane - the card right of the video player.
+//  DeltaPane - the card right of the video player.
 //
 //  It answers one question: on this lap, where am I gaining and where am I
 //  losing time against the best lap of the same track that this session knows
@@ -37,12 +37,16 @@ sealed class DeltaPane : Pane
     // it we align by that instead of by driven distance, so a wider line on one
     // lap does not shift the comparison.
     float[] curProg, refProg;
+    List<LapSample> curS, refS;         // samples up to the lap line, nothing past it
 
     float[] pTime;                      // reference time at 0, 1/N, 2/N .. 1
     bool byProg;
 
     public float Delta;                 // seconds, + means slower than the reference
     public bool HasRef;
+    public bool ByProg;                 // alignment uses track progress, not odometer
+    public bool Approx;                 // ... and that progress came from distance, not the track
+    public TrackOutline Outline;         // learned track, used when ACC gives no progress
     public bool Manual;                       // reference was picked by hand, not the fastest
     public event EventHandler PickRef;        // "compare..." clicked
     public event EventHandler UseAuto;        // "auto" clicked
@@ -74,6 +78,8 @@ sealed class DeltaPane : Pane
     {
         Cur = cur;
         Ref = refLap;
+        curS = null; refS = null;
+        Approx = false;
         curDist = Distances(cur);
         refDist = Distances(refLap);
         HasRef = false;
@@ -84,90 +90,171 @@ sealed class DeltaPane : Pane
 
         if (cur == null) { Why = "no lap"; return; }
         if (curDist == null) { Why = "this lap has no position data"; return; }
-        if (refLap == null || refDist == null) { Why = "no other lap of this track yet"; return; }
+        if (refLap == null || refDist == null || refLap == cur) { Why = "no other lap of this track yet"; return; }
 
-        curProg = Progress(cur);
-        refProg = Progress(refLap);
-        byProg = curProg != null && refProg != null;
+        int cut;
+        curProg = Progress(cur, out cut);
+        curS = Cut(cur, cut);
+        if (curProg == null) { curProg = ProgressFromOutline(cur, Outline, out cut); curS = Cut(cur, cut); }
+        refProg = Progress(refLap, out cut);
+        refS = Cut(refLap, cut);
+        if (refProg == null) { refProg = ProgressFromOutline(refLap, Outline, out cut); refS = Cut(refLap, cut); }
+
+        // Still nothing: project both laps onto the line the reference lap itself
+        // drove.  That works even when this track has no saved map yet, and it keeps
+        // both laps on exactly the same yardstick.
+        if (curProg == null || refProg == null)
+        {
+            TrackOutline path = PathOf(refLap);
+            if (path != null)
+            {
+                if (curProg == null) { curProg = ProgressFromOutline(cur, path, out cut); curS = Cut(cur, cut); }
+                if (refProg == null) { refProg = ProgressFromOutline(refLap, path, out cut); refS = Cut(refLap, cut); }
+            }
+        }
+
+        // Neither lap carried usable lap progress (ACC's normalized position reads
+        // zero on some builds) and no track map was available either: aligning by
+        // the fraction of the lap distance each lap had covered still gives a
+        // usable curve, so do that instead of showing nothing at all.
+        if (curProg == null || refProg == null)
+        {
+            if (curDist != null && refDist != null
+                && curDist[curDist.Length - 1] > 100f && refDist[refDist.Length - 1] > 100f)
+            {
+                curProg = Normalised(curDist); curS = All(cur);
+                refProg = Normalised(refDist); refS = All(refLap);
+                Approx = true;
+            }
+        }
+
+        byProg = curProg != null && refProg != null && curS != null && refS != null;
+        ByProg = byProg;
         pTime = null;
         if (byProg)
         {
-            int np = ProgSteps + 1;
-            pTime = new float[np];
-            int pj = 0;
-            for (int i = 0; i < np; i++)
+            // Both runs must actually cover the lap, otherwise the lookup would keep
+            // returning the other lap's first or last sample and the curve would ramp
+            // or dive for no reason.
+            float curEnd = curS[curS.Count - 1].T, refEnd = refS[refS.Count - 1].T;
+            if (curEnd < 5f || refEnd < 5f || Math.Abs(curProg[curProg.Length - 1] - 1f) > 0.02f
+                || Math.Abs(refProg[refProg.Length - 1] - 1f) > 0.02f)
             {
-                float want = i / (float)ProgSteps;
-                while (pj < refProg.Length - 2 && refProg[pj + 1] < want) pj++;
-                float s0 = refProg[pj], s1 = refProg[pj + 1];
-                float t0 = Ref.Samples[pj].T, t1 = Ref.Samples[pj + 1].T;
-                float f = s1 > s0 ? (want - s0) / (s1 - s0) : 0f;
-                pTime[i] = t0 + (t1 - t0) * f;
+                byProg = false;
+                HasRef = false;
+                Why = "these laps cannot be aligned - drive one full flying lap";
+                return;
             }
             HasRef = true;
             return;
         }
 
-        // no progress data (old files): fall back to distance, resampled on a
-        // grid so a lookup is a binary search
-        float total = refDist[refDist.Length - 1];
-        int n = (int)(total / Step) + 2;
-        gridDist = new float[n];
-        gridTime = new float[n];
-        int j = 0;
-        for (int i = 0; i < n; i++)
-        {
-            float want = i * Step;
-            while (j < refDist.Length - 2 && refDist[j + 1] < want) j++;
-            float d0 = refDist[j], d1 = refDist[j + 1];
-            float t0 = Ref.Samples[j].T, t1 = Ref.Samples[j + 1].T;
-            float f = d1 > d0 ? (want - d0) / (d1 - d0) : 0f;
-            gridDist[i] = want;
-            gridTime[i] = t0 + (t1 - t0) * f;
-        }
-        float totCur = curDist[curDist.Length - 1];
-        float totRef = refDist[refDist.Length - 1];
-        bool partial = Cur.LapMs < 1000f;               // lap in progress: shorter is expected
-        if (totRef < 100f || totCur > 1.15f * totRef || (!partial && totCur < 0.85f * totRef))
-        {
-            Why = "these two laps do not match (" + (totCur / 1000f).ToString("0.00", Fmt.Inv)
-                + " km vs " + (totRef / 1000f).ToString("0.00", Fmt.Inv) + " km)";
-            return;
-        }
-        if (Ref.LapMs > 1000f && Cur.LapMs > 1000f)
-        {
-            float ratio = Cur.LapMs / Ref.LapMs;
-            if (ratio < 0.7f || ratio > 1.4f)
-            {
-                Why = "lap times are too far apart to compare";
-                return;
-            }
-        }
-        HasRef = true;
+        Why = curProg == null && refProg == null
+            ? "no lap progress for either lap - drive a full flying lap"
+            : (curProg == null ? "no lap progress for this lap - drive a full flying lap"
+                               : "the reference lap has no lap progress");
+        return;
+    }
 
+    /// Debug only: what the alignment ended up with (0 = current lap, 1 = reference).
+    public string SampleInfo(int which)
+    {
+        List<LapSample> s = which == 0 ? curS : refS;
+        float[] p = which == 0 ? curProg : refProg;
+        if (s == null || p == null) return "none";
+        return s.Count.ToString(Fmt.Inv) + " samples, prog " + p[0].ToString("0.000", Fmt.Inv)
+               + "->" + p[p.Length - 1].ToString("0.000", Fmt.Inv)
+               + ", t " + s[0].T.ToString("0.0", Fmt.Inv) + "->" + s[s.Count - 1].T.ToString("0.0", Fmt.Inv);
+    }
+
+    /// The samples up to the lap line; everything the game reported after the line
+    /// belongs to the next lap and must not stretch this lap's own time span.
+    static List<LapSample> Cut(LapData d, int cut)
+    {
+        if (d == null || d.Samples == null) return null;
+        if (cut < 0 || cut >= d.Samples.Count) return null;
+        return d.Samples.GetRange(0, cut + 1);
     }
 
     const int ProgSteps = 1000;         // 0.1 % of the lap per grid step
 
     /// ACC's normalized position per sample, or null when the lap predates it.
-    static float[] Progress(LapData d)
+    static float[] Progress(LapData d, out int cut)
     {
+        cut = -1;
         if (d == null || d.Samples == null || d.Samples.Count < 8) return null;
         float[] r = new float[d.Samples.Count];
-        float max = 0f, prev = -1f, add = 0f;
+        for (int i = 0; i < r.Length; i++) r[i] = d.Samples[i].S;
+        return Finish(r, out cut, true);
+    }
+
+    /// Progress taken from the learned track outline: every sample is matched to
+    /// the nearest outline point.  ACC's own normalized position is zero on this
+    /// build often enough that the delta card must not depend on it.
+    static float[] ProgressFromOutline(LapData d, TrackOutline o, out int cut)
+    {
+        cut = -1;
+        if (d == null || d.Samples == null || d.Samples.Count < 8) return null;
+        if (o == null || o.Points == null || o.Points.Count < 8 || o.LengthM < 200f) return null;
+        int n = o.Points.Count;
+        float[] r = new float[d.Samples.Count];
+
+        int hint = 0;
+        float best = float.MaxValue;
+        for (int j = 0; j < n; j++)                       // find the first sample
+        {
+            float dx = o.Points[j].X - d.Samples[0].X, dz = o.Points[j].Y - d.Samples[0].Z;
+            float m = dx * dx + dz * dz;
+            if (m < best) { best = m; hint = j; }
+        }
+
         for (int i = 0; i < r.Length; i++)
         {
-            float s0 = d.Samples[i].S;
+            LapSample s = d.Samples[i];
+            best = float.MaxValue;
+            int at = hint;
+            for (int j = hint - 80; j <= hint + 80; j++)  // the car only moves a little per sample
+            {
+                int k = ((j % n) + n) % n;
+                float dx = o.Points[k].X - s.X, dz = o.Points[k].Y - s.Z;
+                float m = dx * dx + dz * dz;
+                if (m < best) { best = m; at = k; }
+            }
+            hint = at;
+            r[i] = at / (float)n;
+        }
+        return Finish(r, out cut, true);
+    }
+
+    /// Unwraps the lap-line jump, clamps jitter and normalises the covered range to
+    /// 0..1.  `cut` is the sample that sits on the line: samples after it belong to
+    /// the next lap, and keeping them made the reference's time at the line 10 s too
+    /// big (the delta curve then dived off the chart at the end of the lap).
+    ///
+    /// `allowEnd` handles the usual case where the recording simply stops just
+    /// before the line - the lap file never contains the wrapped sample, so without
+    /// it the whole card claimed "no track progress for this lap".
+    static float[] Finish(float[] r, out int cut, bool allowEnd)
+    {
+        cut = -1;
+        float prev = -1f, add = 0f;
+        for (int i = 0; i < r.Length; i++)
+        {
+            float s0 = r[i];
             if (prev >= 0f && s0 < prev - 0.5f) add += 1f;   // lap line: 0.999 -> 0.001
             prev = s0;
             r[i] = s0 + add;
-            if (r[i] > max) max = r[i];
+            if (r[i] >= 1f) { cut = i; break; }
         }
-        float baseS = r[0], span = max - baseS;
-        if (max - baseS < 0.9f) return null;                 // never reached the end of the lap
-        if (span > 1.0001f)
-            for (int i = 0; i < r.Length; i++) r[i] = (r[i] - baseS) / span;
-        return r;
+        if (cut < 0 && allowEnd) cut = r.Length - 1;         // the last sample is the line
+        if (cut < 4) return null;                            // no lap line inside this lap
+        for (int i = 1; i <= cut; i++) if (r[i] < r[i - 1]) r[i] = r[i - 1];   // jitter is not progress
+        float baseS = r[0], span = r[cut] - baseS;
+        if (span < 0.5f) return null;
+        float[] o = new float[cut + 1];
+        for (int i = 0; i <= cut; i++) o[i] = (r[i] - baseS) / span;
+        o[cut] = 1f;
+        return o;
     }
 
     /// Cumulative distance of every sample, or null when the lap has no
@@ -190,17 +277,62 @@ sealed class DeltaPane : Pane
         return r;
     }
 
+    /// A throw-away outline built from a lap's own positions, so that a lap can be
+    /// projected onto the line another lap drove when no track map is available.
+    static TrackOutline PathOf(LapData d)
+    {
+        if (d == null || d.Samples == null || d.Samples.Count < 8) return null;
+        TrackOutline o = new TrackOutline();
+        o.Track = d.Track;
+        o.Closed = true;
+        for (int i = 0; i < d.Samples.Count; i++)
+        {
+            LapSample s = d.Samples[i];
+            o.Points.Add(new PointF(s.X, s.Z));
+        }
+        o.RecomputeLength();
+        return o.LengthM >= 200f ? o : null;
+    }
+
+    /// Progress 0..1 out of a cumulative distance array.
+    static float[] Normalised(float[] d)
+    {
+        float last = d[d.Length - 1];
+        float[] r = new float[d.Length];
+        for (int i = 0; i < d.Length; i++) r[i] = last > 1f ? d[i] / last : 0f;
+        return r;
+    }
+
+    /// Every sample of a lap, used by the approximate (distance) alignment.
+    static List<LapSample> All(LapData d)
+    {
+        if (d == null || d.Samples == null || d.Samples.Count == 0) return null;
+        return d.Samples.GetRange(0, d.Samples.Count);
+    }
+
     /// Time (seconds into the reference lap) at a distance.
+    /// Time the reference lap needed to reach a given point of the lap, given as
+    /// track progress (0..1).  Binary search over that lap's own progress array,
+    /// so nothing has to be resampled and a bad grid cannot spoil the result.
+    float RefTimeAtProg(float p)
+    {
+        if (Ref == null || refProg == null || refS == null || refProg.Length < 2) return 0f;
+        int lo = 0, hi = refProg.Length - 1;
+        if (p <= refProg[lo]) return refS[lo].T;
+        if (p >= refProg[hi]) return refS[hi].T;
+        while (hi - lo > 1)
+        {
+            int mid = (lo + hi) / 2;
+            if (refProg[mid] <= p) lo = mid; else hi = mid;
+        }
+        float s0 = refProg[lo], s1 = refProg[hi];
+        float f = s1 > s0 ? (p - s0) / (s1 - s0) : 0f;
+        return refS[lo].T + (refS[hi].T - refS[lo].T) * f;
+    }
+
     float RefTimeAt(float dist)
     {
-        if (byProg)
-        {
-            float x = dist * ProgSteps;
-            if (x <= 0f) return pTime[0];
-            int pi = (int)x;
-            if (pi >= ProgSteps) return pTime[ProgSteps];
-            return pTime[pi] + (pTime[pi + 1] - pTime[pi]) * (x - pi);
-        }
+        if (byProg) return RefTimeAtProg(dist);
         if (gridTime == null || gridTime.Length == 0) return 0f;
         int i = (int)(dist / Step);
         if (i < 0) i = 0;
@@ -235,11 +367,12 @@ sealed class DeltaPane : Pane
         if (!HasRef || Cur == null) { Delta = 0f; return; }
         float t = (float)Pos;
         if (t < 0f) t = 0f;
-        if (t > Cur.Span) t = Cur.Span;
+        float end = ByProg && curS != null ? curS[curS.Count - 1].T : Cur.Span;
+        if (t > end) t = end;
         Delta = t - RefTimeAt(DistanceAtTime(t));
         // at the line the delta must read exactly the lap time difference
-        if (Cur.LapMs > 1000f && Ref.LapMs > 1000f && t >= Cur.Span - 0.12f)
-            Delta = Cur.Span - Ref.Span;
+        if (Cur.LapMs > 1000f && Ref.LapMs > 1000f && t >= end - 0.12f)
+            Delta = end - RefTimeAtProg(1f);
     }
 
     protected override void OnMouseUp(MouseEventArgs e)
@@ -312,10 +445,12 @@ sealed class DeltaPane : Pane
         if (plot.Height < 24 || plot.Width < 40) return;
 
         float maxAbs = 0.5f;
-        for (int i = 0; i < Cur.Samples.Count; i++)
+        int n = byProg ? curS.Count : Cur.Samples.Count;
+        for (int i = 0; i < n; i++)
         {
             float at = byProg ? curProg[i] : curDist[Math.Min(i, curDist.Length - 1)];
-            float dd = Math.Abs(Cur.Samples[i].T - RefTimeAt(at));
+            float tt = byProg ? curS[i].T : Cur.Samples[i].T;
+            float dd = Math.Abs(tt - RefTimeAt(at));
             if (dd > maxAbs) maxAbs = dd;
         }
         maxAbs = (float)Math.Ceiling(maxAbs * 2f) / 2f;
@@ -329,10 +464,11 @@ sealed class DeltaPane : Pane
         bool atLine = Cur.LapMs > 1000f && Ref.LapMs > 1000f;
         if (atLine)
         {
-            lapDiff = Cur.Span - Ref.Span;
+            lapDiff = (byProg && curS != null ? curS[curS.Count - 1].T : Cur.Span)
+                      - (byProg && refS != null ? refS[refS.Count - 1].T : Ref.Span);
             if (Math.Abs(lapDiff) > maxAbs) maxAbs = (float)Math.Ceiling(Math.Abs(lapDiff) * 2f) / 2f;
         }
-        float span = Math.Max(0.1f, Math.Min(Cur.Span, Cur.LastT > 0.5f ? Cur.LastT : Cur.Span));
+        float span = Math.Max(0.1f, byProg && curS != null ? curS[curS.Count - 1].T : Math.Min(Cur.Span, Cur.LastT > 0.5f ? Cur.LastT : Cur.Span));
         PointF prev = PointF.Empty;
         bool hasPrev = false;
         using (Pen pen = new Pen(Pal.Amber, 2.8f))
@@ -380,6 +516,10 @@ sealed class DeltaPane : Pane
             if (lx > plot.Right - 74) lx = (int)px2 - 74;
             G.TextMidL(g, dtxt, F.Cap, dc, new Rectangle(lx, ly, 70, 16), 0f);
         }
+
+        if (Approx)
+            G.TextMidR(g, "aligned by distance", F.CapS, Color.FromArgb(110, 110, 110),
+                       new Rectangle(plot.X, plot.Bottom - 14, plot.Width - 2, 14), 0f);
     }
 
     /// Distance travelled at a lap time; linear between samples.
@@ -387,7 +527,7 @@ sealed class DeltaPane : Pane
     {
         if (byProg)
         {
-            List<LapSample> cs = Cur.Samples;
+            List<LapSample> cs = curS;
             if (t <= cs[0].T) return curProg[0];
             int hi0 = cs.Count - 1;
             if (t >= cs[hi0].T) return curProg[hi0];

@@ -1,4 +1,4 @@
-﻿// ===========================================================================
+// ===========================================================================
 //  AccDash - lap list, recording and review
 //  src/Dash.Laps.cs
 // ===========================================================================
@@ -73,7 +73,9 @@ sealed partial class Dash
         revPlaying = false;
         revSpeed = 1.0;
         reviewOutline = BuildLapOutline(d);
+        deltaPane.Outline = outline;
         refLap = FindReference(d);
+        if (refLap != null && NoName(d)) d.Track = refLap.Track;   // no name on this lap: borrow the reference's
         deltaPane.Manual = false;
         deltaPane.Set(d, refLap);
         deltaPane.Visible = true;
@@ -174,12 +176,26 @@ sealed partial class Dash
     {
         LapData best = null;
         string key = cur.Track == null ? "" : cur.Track.Trim().ToLowerInvariant();
+        if (key == "unknown" || key == "-") key = "";
         foreach (LapData d in laps)
         {
             if (ReferenceEquals(d, cur) || d.Samples == null || d.Samples.Count < 8) continue;
             if (d.LapMs < 1000f) continue;
             string k = d.Track == null ? "" : d.Track.Trim().ToLowerInvariant();
-            if (k.Length == 0 || k != key) continue;
+            if (k == "unknown" || k == "-") k = "";
+            bool known = k.Length > 0 && key.Length > 0;
+            if (known)
+            {
+                if (k != key) continue;
+            }
+            else
+            {
+                // one of the two laps never learned the track name (the static page
+                // was still empty when it started): fall back to a lap time sanity
+                // check so laps from very different tracks do not pair up
+                float ratio = d.LapMs / Math.Max(1f, cur.LapMs);
+                if (ratio < 0.6f || ratio > 1.6f) continue;
+            }
             if (best == null || d.LapMs < best.LapMs) best = d;
         }
         return best;
@@ -253,20 +269,126 @@ sealed partial class Dash
         sn.Session = -1;
     }
 
+    // --- video taping: armed by the timing line, dropped on anything else ----
+
+    /// Called when the lap counter moves or the lap clock restarts, which is the
+    /// moment the car crosses the start/finish line.  Only from here on is the
+    /// lap taped, so an out lap or a lap resumed in the middle is never recorded.
+    void ArmRecording(double now)
+    {
+        recArmed = true;
+        recArmedAt = now;
+        CrossingCount++;
+        pauseSince = -1;
+        // deliberately no rec.End() here: the chunk writer keeps running across the
+        // line, otherwise stopping and restarting it stalls the UI on every lap
+        lapNote = "";
+        lapNoteAt = -1e9;
+    }
+
+    /// Anything that is not a clean flying lap ends the recording and throws the
+    /// chunks away: back to the menus, a pause, a restart, a session or track
+    /// change.
+    void CheckLapAbort(double now)
+    {
+        if (!recArmed) { pauseSince = -1; return; }
+        if (now - recArmedAt < 1200) return;       // just crossed: let the new lap settle
+
+        string why = null;
+
+        if (sn.Status == 1 || sn.Status == 3)                  // replay / pause
+        {
+            if (pauseSince < 0) pauseSince = now;
+            else if (now - pauseSince > 700) why = "session paused";
+        }
+        else pauseSince = -1;
+
+        if (why == null && !sn.Live) why = "back to the menus";
+        // only a real rewind: the new lap must have started running already,
+        // otherwise the tiny clock right after the line looks like a jump back
+        if (why == null && recLastT > 5f && sn.CurMs > 1000 && sn.CurMs / 1000f + 3f < recLastT)
+            why = "lap restarted";
+        if (why == null && recLap != null && recLap.Track.Length > 0 && !LapData.SameTrack(recLap.Track, sn.Track))
+            why = "track changed";
+
+        if (why != null) AbortRecording(why);
+    }
+
+    void AbortRecording(string why)
+    {
+        recArmed = false;
+        AbortCount++;
+        // nothing to delete: chunks are shared by every lap and are trimmed by time,
+        // and a discarded lap never gets a clip cut out of them
+        recLap = null;
+        recLapNo = -1;
+        recLastT = -1f;
+        lapNote = "recording discarded: " + why;
+        lapNoteAt = Clock.Now;
+    }
+
+    /// Restarting a session keeps ACC "live" and on the same track, so the only
+    /// giveaways are the session type changing or the time left jumping back up
+    /// (a restart refills the timer).  Called once per tick, always.
+    bool SessionJumped()
+    {
+        bool jumped = false;
+        if (lastSession >= 0 && sn.Session != lastSession) jumped = true;
+        if (lastTimeLeft > 30f && sn.SessionTimeLeft > lastTimeLeft + 5f) jumped = true;
+        lastSession = sn.Session;
+        lastTimeLeft = sn.SessionTimeLeft;
+        return jumped;
+    }
+
     void RecordLap(double now)
     {
         if ((!shmOpen && !recordTest && !FakeLive) || review != null) return;
         float cur = sn.CurMs / 1000f;
-        if (cur <= 0.05f) return;
+        if (cur < 0f) return;
         int lapNo = sn.CompletedLaps + 1;
 
-        // a new lap starts when the counter moves on or the clock jumps back
-        if (recLap == null || lapNo != recLapNo || cur + 1.5f < recLastT)
+        // Restarting a session (or loading a new one) rewinds the lap counter and
+        // the lap clock while ACC stays "live": that is not a flying lap.  Drop
+        // whatever was being taped instead of carrying the old lap across, which
+        // used to leave the panel "recording" with a clock that never restarted.
+        bool sessionJump = SessionJumped();
+        bool counterBack = recLap != null && lapNo < recLapNo;
+        if (recLap != null && (counterBack || sessionJump))
+        {
+            AbortRecording(counterBack ? "session restarted" : "session changed");
+            recLastAdd = -1e9;
+        }
+
+        // A new lap starts when the counter moves on or the clock jumps back to
+        // zero - those two cases mean the car actually crossed the timing line,
+        // and only then does the video recorder start taping.  Note that the
+        // clock reads ~0 on the very tick of the crossing, so this must be
+        // decided before any "cur is too small" bail-out.
+        // ACC's iLastTime lags the crossing by a moment: once the new lap is a
+        // couple of seconds old take the game's own number, so the list shows
+        // exactly the time ACC shows instead of our own estimate.
+        if (lastClosed != null && !lastClosedFixed && sn.LastMs > 500 && cur > 1.5f && cur < 8f)
+        {
+            if (Math.Abs((long)sn.LastMs - (long)lastClosed.LapMs) < 4000)
+            {
+                lastClosed.LapMs = sn.LastMs;
+                lastClosedFixed = true;
+            }
+        }
+
+        bool counterMoved = recLap != null && lapNo > recLapNo;
+        // ...but only a moving car crosses: after a restart the clock restarts
+        // while the car sits in the pits, which is not a lap
+        bool clockRestart = recLap != null && cur + 1.5f < recLastT && sn.Speed > 10f;
+        bool lineCross = counterMoved || clockRestart;
+
+        if (recLap == null || counterMoved || clockRestart)
         {
             CloseLap(now - cur * 1000.0);
             recLap = new LapData();
-            recLap.Track = sn.Track;
-            recLap.Car = sn.Car;
+            string tr = sn.Track == null ? "" : sn.Track;
+            recLap.Track = tr.Length > 0 ? tr : (outline != null ? outline.Track : "");
+            recLap.Car = sn.Car == null ? "" : sn.Car;
             recLap.LapNo = lapNo;
             recLap.MaxRpm = sn.MaxRpm;
             recLap.AirTemp = sn.AirTemp;
@@ -276,6 +398,7 @@ sealed partial class Dash
             recLapNo = lapNo;
             recLastT = -1f;
             recLastAdd = -1e9;
+            if (lineCross) ArmRecording(now);
         }
 
         if (now - recLastAdd < 66.0) return;       // ~15 Hz, same as the charts
@@ -329,11 +452,38 @@ sealed partial class Dash
 
     void CloseLap(double wall1)
     {
+        recArmed = false;
+        CloseLapInner(wall1);
+    }
+
+    LapData lastClosed;      // ACC publishes iLastTime only after the line
+    bool lastClosedFixed;
+
+    void CloseLapInner(double wall1)
+    {
         if (recLap == null) return;
         recLap.WallT1 = wall1;
+        // the static page can still be blank when the first lap starts, and a lap
+        // without a track name can never find a reference lap: backfill both this
+        // lap and anything already in the list as soon as the name is known
+        string liveTrack = sn.Track == null ? "" : sn.Track;
+        if (NoName(recLap)) recLap.Track = liveTrack;
+        if (liveTrack.Length > 0)
+            for (int i = 0; i < laps.Count; i++)
+                if (NoName(laps[i])) laps[i].Track = liveTrack;
         if (recLap.Samples.Count >= 20)
         {
-            recLap.LapMs = sn.LastMs > 500 ? sn.LastMs : recLastT * 1000f;
+            // ACC only publishes iLastTime a moment after the car crosses the line, so
+            // on this tick it can still hold the *previous* lap's time - that used to
+            // stamp lap N with lap N-1's time and cut every replay short by the
+            // difference.  Trust ACC only when it agrees with our own clocks: the lap
+            // sample clock (recLastT) and the wall time between the two crossings.
+            long clock = (long)Math.Round(recLastT * 1000f);
+            long wall = (long)Math.Round(wall1 - recLap.WallT0);
+            long span = Math.Max(clock, wall);
+            if (wall - clock > 2000 && clock > 500) span = clock;   // a pause inflated the wall clock
+            if (span < 500) span = clock;
+            recLap.LapMs = (sn.LastMs > 500 && Math.Abs((long)sn.LastMs - span) < 1500) ? sn.LastMs : span;
 
             // a lap that did not drive the track (cut, reset, teleport, pit bug) has a
             // distance far from the learned track length: throw it away instead of
@@ -351,12 +501,22 @@ sealed partial class Dash
             else
             {
                 laps.Add(recLap);
+                lastClosed = recLap;
+                lastClosedFixed = false;
                 QueueClip(recLap);
             }
         }
         recLap = null;
         recLapNo = -1;
     }
+    /// A lap whose track name never arrived (blank static page, or the "unknown"
+    /// placeholder written by the parser) cannot be matched to a reference lap.
+    static bool NoName(LapData d)
+    {
+        string t = d.Track == null ? "" : d.Track.Trim();
+        return t.Length == 0 || t == "-" || string.Equals(t, "unknown", StringComparison.OrdinalIgnoreCase);
+    }
+
     /// Distance the car actually covered during a lap, from its own samples.
     static float LapDistance(LapData d)
     {

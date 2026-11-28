@@ -1,4 +1,4 @@
-﻿// ===========================================================================
+// ===========================================================================
 //  AccDash - timer, tick loop, shared memory open/close, CLI modes
 //  src/Dash.Runtime.cs
 // ===========================================================================
@@ -80,8 +80,12 @@ sealed partial class Dash
         lastTick = now;
 
         // --- source: ACC shared memory only
+        // While a lap is open for review the lap file is the source of truth: a live
+        // poll would overwrite the snapshot between FillReviewSnap() calls, and the
+        // track map (which runs first) then saw an empty track name and threw the
+        // learned outline away.
         if (FakeLive) FakeSnap(now);
-        else
+        else if (review == null)
         {
             // ACC recreates its shared pages when a session (re)starts: a page that
             // stops advancing is a stale mapping, so drop it and map the page again.
@@ -118,6 +122,14 @@ sealed partial class Dash
         }
 
         UpdateTrackMap(now);
+        if (review != null && deltaPane.Outline != outline)
+        {
+            // The learned map is loaded on the first ticks, i.e. after EnterReview has
+            // already set the card up; without this the fallback alignment never saw it.
+            deltaPane.Outline = outline;
+            deltaPane.Set(review, refLap);
+            deltaPane.Invalidate();
+        }
 
 
         if (review != null)
@@ -150,6 +162,7 @@ sealed partial class Dash
 
         if (now - lastStat > 1000) { paintsPerSec = (int)((paints - lastPaints) * 1000.0 / Math.Max(1.0, now - lastStat)); lastPaints = paints; lastStat = now; WriteStatus(now); }
 
+        CheckLapAbort(now);
         TickVideo(now);
         TickRecorder(now);
         Render(now);
@@ -251,6 +264,13 @@ sealed partial class Dash
         sb.AppendLine("session    " + sess.Bounds + "  rows=" + sess.Rows.Count + " rowH=" + sess.LastRowH + " top=" + sess.LastTop + " footH=" + sess.LastFootH + " h=" + sess.Height);
         sb.AppendLine("map        " + map.Bounds + "  pts=" + (outline != null ? outline.Points.Count.ToString(Fmt.Inv) : "-") + " key=" + outlineKey);
         sb.AppendLine("video      " + video.Bounds + "  note=[" + video.Note + "] live=" + (video.Live != null) + "  hasVideo=" + (review != null && review.HasVideo));
+        sb.AppendLine("delta      byProg=" + deltaPane.ByProg + " hasRef=" + deltaPane.HasRef + " why=[" + deltaPane.Why + "]"
+                      + " pos=" + deltaPane.Pos.ToString("0.000", Fmt.Inv) + " delta=" + deltaPane.Delta.ToString("0.000", Fmt.Inv)
+                      + " ref=" + (refLap == null ? "-" : refLap.Name)
+                      + "  outline=" + (deltaPane.Outline == null ? "null"
+                          : (deltaPane.Outline.Points.Count.ToString(Fmt.Inv) + " pts "
+                             + deltaPane.Outline.LengthM.ToString("0", Fmt.Inv) + " m closed=" + deltaPane.Outline.Closed))
+                      + "  curS=" + deltaPane.SampleInfo(0) + "  refS=" + deltaPane.SampleInfo(1));
         sb.AppendLine("time slider" + timeSlider.Bounds);
         sb.AppendLine("time label " + timeLbl.Bounds);
         sb.AppendLine("ini label  " + iniLbl.Bounds);
@@ -262,7 +282,7 @@ sealed partial class Dash
         sb.AppendLine("trace1     " + trPedals.Bounds);
         sb.AppendLine("trace2     " + trSteerFf.Bounds);
         foreach (Button b in headButtons) sb.AppendLine("button     " + b.Text + " " + b.Bounds + " vis=" + b.Visible);
-        sb.AppendLine("laps       " + laps.Count + "  rec=" + (recLap != null ? recLap.Samples.Count.ToString() : "-"));
+        sb.AppendLine("laps       " + laps.Count + "  rec=" + (recLap != null ? recLap.Samples.Count.ToString() : "-") + "  " + LapDump());
         sb.AppendLine("gg         lat=" + gg.Lat.ToString("0.00", Fmt.Inv) + " lon=" + gg.Lon.ToString("0.00", Fmt.Inv) + " scale=" + gg.GScale.ToString("0.0", Fmt.Inv));
         if (review != null && clipCap != null)
             sb.AppendLine("video      frame=" + clipCap.FrameNo.ToString(Fmt.Inv) + " target=" + clipCap.Target.ToString(Fmt.Inv)
@@ -271,5 +291,17 @@ sealed partial class Dash
         sb.AppendLine("review     pos=" + reviewPos.ToString("0.00", Fmt.Inv) + " span=" + (review != null ? review.Span.ToString("0.00", Fmt.Inv) : "-") + " playing=" + revPlaying + " speed=" + revSpeed.ToString("0", Fmt.Inv));
         File.WriteAllText(path + ".layout.txt", sb.ToString());
         Close();
+    }
+
+    /// One line per lap for the --shot dump: number, time and track, so a wrong
+    /// lap time (the "two laps with the same time" bug) is visible at a glance.
+    string LapDump()
+    {
+        StringBuilder b = new StringBuilder();
+        foreach (LapData d in laps)
+            b.Append("[L").Append(d.LapNo.ToString(Fmt.Inv)).Append(' ')
+             .Append(((int)d.LapMs).ToString(Fmt.Inv)).Append("ms ")
+             .Append(d.Track.Length > 0 ? d.Track : "?").Append("] ");
+        return b.ToString();
     }
 }

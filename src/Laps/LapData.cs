@@ -1,4 +1,4 @@
-﻿// ===========================================================================
+// ===========================================================================
 //  AccDash - lap sample, lap data and file format
 //  src/Laps/LapData.cs
 // ===========================================================================
@@ -55,6 +55,7 @@ sealed class LapData
     public int VideoW = 320, VideoH = 180, VideoFps = 24;
     public float VideoMs;          // clip length, ms
     public float VideoT0;          // lap time (s) at which the clip starts
+    public int VideoState;         // 0 none, 1 still encoding, 2 ready, 3 failed
 
     // --- wall clock window, only meaningful while recording
     public double WallT0;          // ms, wall clock when the lap started
@@ -103,6 +104,8 @@ sealed class LapData
             string n = "L" + LapNo.ToString(Fmt.Inv).PadLeft(2, ' ') + "  " + Fmt.Mmss((int)LapMs);
             if (!string.IsNullOrEmpty(Track)) n += "  " + Track;
             if (HasVideo) n += "  [video]";
+            else if (VideoState == 1) n += "  [video: processing]";
+            else if (VideoState == 3) n += "  [video: failed]";
             if (FromFile) n += "  [file]";
             return n;
         }

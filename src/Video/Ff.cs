@@ -90,6 +90,7 @@ static class Ff
             psi.RedirectStandardError = true;
             using (Process p = Process.Start(psi))
             {
+                try { p.PriorityClass = ProcessPriorityClass.BelowNormal; } catch { }
                 string o = p.StandardOutput.ReadToEnd();
                 string e = p.StandardError.ReadToEnd();
                 if (!p.WaitForExit(timeoutMs)) { try { p.Kill(); } catch { } }
@@ -309,6 +310,9 @@ static class Ff
         Diag = "";
         LastWindow = IntPtr.Zero;
         if (ForceArea.Width > 64 && ForceArea.Height > 64) { found = true; Diag = "forced " + Fmt.Str(ForceArea); return ForceArea; }
+        // (the window rect is not used as the capture region: taping the whole
+        //  monitor the game sits on keeps the full picture, while a window rect
+        //  crops the render as soon as DWM or the game window reports borders)
 
         StringBuilder log = new StringBuilder();
         Screen[] all = Screen.AllScreens;
@@ -394,10 +398,16 @@ static class Ff
         }
         log.Append("game window: ").Append(bestHow).Append(' ').Append(Fmt.Str(best)).Append('\n');
 
+        // Tape exactly the game window: Windows gives us its frame bounds in real
+        // pixels (DwmGetWindowAttribute above), so a windowed game fills the clip
+        // instead of sitting in the middle of a desktop copy.  Only a window that
+        // covers the whole monitor is snapped to the monitor, to drop its 1 px
+        // border.
         Rectangle area = best;
         for (int i = 0; i < all.Length; i++)
         {
-            if (Overlap(best, all[i].Bounds) >= 0.90 * ((double)best.Width * best.Height))
+            long mon = (long)all[i].Bounds.Width * all[i].Bounds.Height;
+            if (mon > 0 && Overlap(best, all[i].Bounds) > 0.99 * mon)
             {
                 area = all[i].Bounds;
                 log.Append("snapped to screen ").Append(i).Append(' ').Append(Fmt.Str(area)).Append('\n');

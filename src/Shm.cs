@@ -205,6 +205,7 @@ sealed class AccShm : IDisposable
     GCHandle pinPhys, pinGraph, pinStat;
 
     public bool PhysOk, GraphOk, StatOk;
+    public float GraphNorm;              // raw normalizedCarPosition, for the heartbeat
     public int PhysLen, GraphLen, StatLen;
     public double PhysStamp, GraphStamp, StatStamp;
     public int PhysPacket, GraphPacket;

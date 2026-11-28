@@ -1,4 +1,4 @@
-﻿// ===========================================================================
+// ===========================================================================
 //  AccDash - render pass, lamps and keyboard handling
 //  src/Dash.Render.cs
 // ===========================================================================
@@ -194,6 +194,7 @@ sealed partial class Dash
             lamps[2].Set(Pal.Green, Fmt.Mmss((int)review.LapMs));
             lamps[3].Set(Pal.Green, string.IsNullOrEmpty(review.Track) ? "-" : review.Track.ToLowerInvariant());
             lamps[4].Set(Pal.Amber, review.FromFile ? "FILE" : "REPLAY");
+            lamps[5].Set(Pal.Dim, "off");
             return;
         }
 
@@ -204,6 +205,7 @@ sealed partial class Dash
             lamps[2].Set(Pal.Green, "live");
             lamps[3].Set(Pal.Green, SessionName(sn.Session).ToLowerInvariant() + " " + sn.CompletedLaps.ToString(Fmt.Inv));
             lamps[4].Set(Pal.Amber, "SIM");
+            lamps[5].Set(Pal.Dim, "sim");
             return;
         }
 
@@ -215,6 +217,19 @@ sealed partial class Dash
         lamps[2].Set(freshGfx ? Pal.Green : Pal.Red, freshGfx ? GfxStatus(sn.Status) : "no data");
         lamps[3].Set(freshGfx ? Pal.Green : Pal.Red, freshGfx ? SessionName(sn.Session).ToLowerInvariant() + " " + sn.CompletedLaps.ToString(Fmt.Inv) + "/" + (sn.TotalLaps > 0 ? sn.TotalLaps.ToString(Fmt.Inv) : "-") : "no session");
         lamps[4].Set(shmOpen ? Pal.Green : Pal.Red, shmOpen ? "ACC" : "offline");
+
+        bool taping = recArmed && rec != null && rec.On;
+        if (!cfg.Video) lamps[5].Set(Pal.Dim, "video off");
+        else if (taping)
+        {
+            // our own stopwatch since the line: ACC's lap clock keeps running when
+            // a session is restarted, which made the lamp count on across restarts
+            double since = (Clock.Now - recArmedAt) / 1000.0;
+            if (since < 0 || since > 3600) since = 0;
+            lamps[5].Set(Pal.Red, "lap " + (sn.CompletedLaps + 1).ToString(Fmt.Inv)
+                                   + "  " + since.ToString("0.0", Fmt.Inv) + " s");
+        }
+        else lamps[5].Set(Pal.Dim, "waits for the line");
     }
 
     protected override void OnShown(EventArgs e)

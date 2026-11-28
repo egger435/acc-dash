@@ -50,6 +50,14 @@ sealed partial class Dash : Form
     double lapNoteAt = -1e9;
     float recLastT = -1f;
     double recLastAdd = -1e9;
+    bool recArmed;               // set when the car crosses the timing line
+    public int CrossingCount;
+    public int AbortCount;
+    double recArmedAt = -1e9;
+    double pauseSince = -1;      // when the session went to pause/replay
+    int lastSession = -1;        // session type seen last, to notice a restart
+    float lastTimeLeft = -1f;    // session time left, to notice a restart
+    public bool SimRestart;      // --simrestart: let the sim restart the session mid drive
     bool recordTest;
     LapData review;              // non-null: the centre charts show this lap
     double reviewPos;            // scrub cursor inside `review`, seconds
@@ -93,10 +101,27 @@ sealed partial class Dash : Form
     /// 22 s so the record -> list -> review path can be exercised without the game.
     void FakeSnap(double now)
     {
+        sn.Live = true;          // the sim drives a real session, gate included
+        FakeSnapBody(now);
+    }
+
+    void FakeSnapBody(double now)
+    {
         double t = now / 1000.0;
-        int lapNo = (int)(t / 22.0);
-        double u = t - lapNo * 22.0;
-        double ph = u / 22.0 * Math.PI * 2.0;
+        // --simrestart: pretend the session is restarted at 60 s (counter back to
+        // zero, clock back to zero) so the abort path can be checked offline
+        if (SimRestart && t >= 60.0) t -= 60.0;
+        // two laps of different lengths (22 s then 25 s, repeating) so one lap can
+        // never be mistaken for its predecessor.  LastMs lags one lap on purpose,
+        // exactly the way ACC publishes iLastTime a moment after the line.
+        double cyc = t % 47.0;
+        int pair = (int)(t / 47.0);
+        bool second = cyc >= 22.0;
+        double lapLen = second ? 25.0 : 22.0;
+        double u = second ? cyc - 22.0 : cyc;
+        int lapNo = pair * 2 + (second ? 1 : 0);
+        double ph = u / lapLen * Math.PI * 2.0;
+        int prevMs = lapNo <= 0 ? 0 : (((lapNo - 1) % 2 == 0) ? 22000 : 25000);
 
         double a = Math.Sin(ph * 6.0);
         sn.Speed = (float)Math.Abs(120 + 70 * Math.Sin(ph * 3.0));
@@ -120,14 +145,14 @@ sealed partial class Dash : Form
         sn.PitLimiter = 0; sn.EngineRunning = 1;
         sn.BrakeBias = 0.56f;
 
-        sn.Track = "Spa"; sn.Car = "mclaren_720s_gt3_evo";
+        sn.Track = "SimTrack"; sn.Car = "mclaren_720s_gt3_evo";   // never saved: FakeLive keeps tracks\ clean
         sn.SectorCount = 3; sn.MaxFuel = 120f;
         sn.NumCars = 1; sn.Position = 1;
         sn.Session = 3; sn.Status = 2; sn.TotalLaps = 0; sn.TrackGrip = 2;
         sn.CompletedLaps = lapNo;
         sn.CurMs = (int)(u * 1000.0);
-        sn.LastMs = lapNo > 0 ? 22000 : 0;
-        sn.BestMs = lapNo > 0 ? 22000 : 0;
+        sn.LastMs = prevMs;
+        sn.BestMs = prevMs;
         sn.DeltaMs = 0;
         sn.SessionTimeLeft = 0f;
         sn.FuelXLap = 2.6f;
@@ -163,6 +188,15 @@ sealed partial class Dash : Form
         sb.AppendLine("track='" + sn.Track + "' cfg='" + sn.TrackConfig + "' mapkey=" + outlineKey +
                       " pts=" + (outline == null ? 0 : outline.Points.Count) +
                       " closed=" + (outline != null && outline.Closed) + " lap=" + sn.CompletedLaps + " anchor=" + lapAnchor);
+        sb.AppendLine("norm=" + sn.Norm.ToString("0.000", Fmt.Inv) + " normRaw=" + shm.GraphNorm.ToString("0.000", Fmt.Inv)
+                      + " cur=" + sn.CurMs + " last=" + sn.LastMs + " lap=" + sn.CompletedLaps);
+        sb.AppendLine("grab fps=" + (grab == null ? 0 : grab.RateFps) + " want=" + cfg.GrabFps
+                      + " ms=" + (grab == null ? 0.0 : grab.Ms).ToString("0.0", Fmt.Inv)
+                      + " seq=" + (grab == null ? 0 : grab.Seq) + " screen=" + (grab != null && grab.UseScreen)
+                      + " fast=" + (grab != null && grab.FastBlit));
+        sb.AppendLine("armed=" + recArmed + " crossings=" + CrossingCount + " aborts=" + AbortCount
+                      + " recLapNo=" + recLapNo + " samples=" + (recLap == null ? 0 : recLap.Samples.Count)
+                      + " recOn=" + (rec != null && rec.On) + " laps=" + laps.Count);
 
         try
         {
@@ -172,7 +206,7 @@ sealed partial class Dash : Form
     }
 
     // header
-    StatusLamp[] lamps;
+    StatusLamp[] lamps;                // 6: link, physics, graphics, session, source, REC
     Button[] headButtons;
     Button btnLaps, btnPause, btnClear, btnSave, btnPlay, btnLive;
 
@@ -194,7 +228,7 @@ sealed partial class Dash : Form
 
     public Dash()
     {
-        Text = "ACC Telemetry Dashboard 1.6";
+        Text = "ACC Telemetry Dashboard 1.6.1";
         ClientSize = new Size(1500, 900);
         MinimumSize = new Size(1180, 700);
 
@@ -258,9 +292,9 @@ sealed partial class Dash : Form
     // ------------------------------------------------------------------ build
     void BuildHeader()
     {
-        lamps = new StatusLamp[5];
-        string[] names = { "ACC SHM", "PHYSICS", "GRAPHICS", "SESSION", "SOURCE" };
-        for (int i = 0; i < 5; i++)
+        lamps = new StatusLamp[6];
+        string[] names = { "ACC SHM", "PHYSICS", "GRAPHICS", "SESSION", "SOURCE", "REC" };
+        for (int i = 0; i < lamps.Length; i++)
         {
             lamps[i] = new StatusLamp(names[i]);
             lamps[i].Set(Pal.Red, "-");

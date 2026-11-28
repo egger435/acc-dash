@@ -40,6 +40,20 @@ static class Native
     public static extern bool IsIconic(IntPtr hWnd);
 
     [DllImport("user32.dll")]
+    public static extern IntPtr WindowFromPoint(POINT p);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetAncestor(IntPtr hWnd, uint flags);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetShellWindow();
+
+    public const uint GA_ROOT = 2;
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct POINT { public int X; public int Y; }
+
+    [DllImport("user32.dll")]
     public static extern bool GetWindowRect(IntPtr hWnd, out RECT r);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
@@ -55,6 +69,22 @@ static class Native
     // DirectX window instead of a black rectangle
     [DllImport("user32.dll")]
     public static extern bool PrintWindow(IntPtr hWnd, IntPtr hdc, int flags);
+
+    public const int HALFTONE = 4;          // dithered downscale: sharp, but the slowest
+    public const int COLORONCOLOR = 3;      // plain pixel dropping: fast, aliased
+    public const int SRCCOPY = 0x00CC0020;
+
+    [DllImport("gdi32.dll", CharSet = CharSet.Auto)]
+    public static extern IntPtr CreateDC(string driver, string device, string port, IntPtr init);
+    [DllImport("gdi32.dll")]
+    public static extern bool DeleteDC(IntPtr hdc);
+    [DllImport("gdi32.dll")]
+    public static extern int SetStretchBltMode(IntPtr hdc, int mode);
+    [DllImport("gdi32.dll")]
+    public static extern bool SetBrushOrgEx(IntPtr hdc, int x, int y, IntPtr prev);
+    [DllImport("gdi32.dll")]
+    public static extern bool StretchBlt(IntPtr dst, int dx, int dy, int dw, int dh,
+                                          IntPtr src, int sx, int sy, int sw, int sh, int rop);
 
     // A DPI-unaware caller cannot print a DPI-unaware window: the sizes do not
     // match and the result is an empty bitmap.  Switching the grab thread to the

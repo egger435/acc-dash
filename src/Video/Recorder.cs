@@ -1,4 +1,4 @@
-﻿// ===========================================================================
+// ===========================================================================
 //  AccDash - 1 s mkv chunk recorder and per-lap clip builder
 //  src/Video/Recorder.cs
 //
@@ -46,6 +46,7 @@ sealed class Recorder
     public int Crf = 26;
     public string Error = "";
     public int Dropped;                 // frames the writer could not keep up with
+    double trimKeep = double.MaxValue;  // chunks older than this may go (writer thread)
     public double LastFrameMean;        // brightness of the newest frame, for --captest
     public bool On { get { return p != null; } }
 
@@ -125,6 +126,15 @@ sealed class Recorder
         lock (gate) StopLocked();
     }
 
+    /// Drops the chunks of the current run: the lap turned out not to be a lap
+    /// (back to the pits, restart, session change) and nothing is kept.
+    public void Discard()
+    {
+        string dir = null;
+        lock (gate) { if (cur != null) dir = cur.Dir; StopLocked(); }
+        try { if (dir != null && Directory.Exists(dir)) Directory.Delete(dir, true); } catch { }
+    }
+
     void StopLocked()
     {
         Process q0 = p;
@@ -165,6 +175,7 @@ sealed class Recorder
             Stream s = p.StandardInput.BaseStream;
             double start = -1;
             long idx = 0;
+            double lastTrim = -1e9;
             while (run)
             {
                 if (start < 0)
@@ -178,6 +189,7 @@ sealed class Recorder
                 }
 
                 double now = Clock.Now;
+                if (now - lastTrim > 2000) { lastTrim = now; try { TrimNow(); } catch { } }
                 long due = (long)Math.Floor((now - start) * Fps / 1000.0);
                 byte[] f;
                 lock (qGate) { f = latest; hasLatest = false; }
@@ -227,10 +239,26 @@ sealed class Recorder
     /// lap being recorded right now.
     public void Trim(double keepFromMs)
     {
+        lock (gate) { if (keepFromMs < trimKeep) trimKeep = keepFromMs; }
+    }
+
+    /// Really deletes the chunks nobody can need any more.  Called from the writer
+    /// thread, never from the UI thread: enumerating and deleting files in the tick
+    /// made the dashboard hitch while driving.
+    void TrimNow()
+    {
+        double keep;
         lock (gate)
         {
-            double keep = keepFromMs;
+            keep = trimKeep;
             if (pendingClips > 0 && pendingFrom < keep) keep = pendingFrom;
+            trimKeep = double.MaxValue;
+        }
+        if (keep == double.MaxValue) return;
+
+        List<string> victims = new List<string>();
+        lock (gate)
+        {
             for (int i = runs.Count - 1; i >= 0; i--)
             {
                 Run r = runs[i];
@@ -241,13 +269,11 @@ sealed class Recorder
                 foreach (string f in files)
                 {
                     double segStart = r.Start + SegIndex(f) * 1000.0;
-                    if (segStart + 3000 < keep)
-                    {
-                        try { File.Delete(f); } catch { }
-                    }
+                    if (segStart + 3000 < keep) victims.Add(f);
                 }
             }
         }
+        foreach (string f in victims) { try { File.Delete(f); } catch { } }
     }
 
     public static void Log(string s)
@@ -318,7 +344,9 @@ sealed class Recorder
             + " segs=" + segs.Count.ToString(Fmt.Inv)
             + " first=" + (segs.Count > 0 ? segs[0].Value.ToString("0", Fmt.Inv) : "-")
             + " last=" + (segs.Count > 0 ? segs[segs.Count - 1].Value.ToString("0", Fmt.Inv) : "-")
-            + " dur=" + dur.ToString("0.000", Fmt.Inv));
+            + " dur=" + dur.ToString("0.000", Fmt.Inv)
+            + "  capture " + FramesIn.ToString(Fmt.Inv) + " frames, " + Dupes.ToString(Fmt.Inv)
+            + " repeated  (chunks " + segs.Count.ToString(Fmt.Inv) + ")");
         string tmp = Path.Combine(Root, "clip_" + DateTime.Now.Ticks.ToString(Fmt.Inv));
         try
         {
